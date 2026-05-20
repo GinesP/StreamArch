@@ -46,6 +46,7 @@ All architecture decisions are documented in `docs/`:
 - [`docs/api-ws-contracts-initial.md`](docs/api-ws-contracts-initial.md) — REST and WebSocket contracts
 - [`docs/architecture-initial-scheduler.md`](docs/architecture-initial-scheduler.md) — Scheduler and prediction engine design
 - [`docs/streamcaporigin-preserve-refactor-drop.md`](docs/streamcaporigin-preserve-refactor-drop.md) — Migration decisions from StreamCapOrigin
+- [`docs/cookies-import.md`](docs/cookies-import.md) — Cookie export/import guidance and operational notes
 
 ## Layers
 
@@ -63,3 +64,36 @@ All architecture decisions are documented in `docs/`:
 python -m app.main                            # Run with default config
 python -m app.main --config config.example.json  # Run with custom config
 ```
+
+## Runtime setup notes
+
+Anything needed to run or operate StreamArch must be documented here or in `docs/`.
+
+### Configuration file
+
+An example runtime config exists at:
+
+```text
+config.example.json
+```
+
+You can launch the app with it using:
+
+```bash
+python -m app.main --config config.example.json
+```
+
+### Cookies
+
+Some platforms may require valid cookies for reliable stream resolution.
+
+The plan for StreamArch is to reuse the cookie system from StreamCapQT/StreamCapOrigin because it already works well in production.
+
+Recommended browser extension for exporting compatible cookies:
+
+- **Export cookie JSON file for Puppeteer**
+- https://chromewebstore.google.com/detail/export-cookie-json-file-for-puppeteer/nmckokihipjgplolmcmjakknndddifde?hl=es&utm_source=ext_sidebar
+
+See the detailed guide in:
+
+- [`docs/cookies-import.md`](docs/cookies-import.md)

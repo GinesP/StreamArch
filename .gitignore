@@ -1,6 +1,8 @@
 .codegraph/
 .atl/
 data/
+cookies.json
+config/cookies.json
 
 # Python
 __pycache__/
