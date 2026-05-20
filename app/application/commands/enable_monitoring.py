@@ -1,7 +1,9 @@
-"""Mark a stream target as a favourite.
+"""Enable monitoring for a stream target.
 
-The ``favorite`` flag affects scheduling priority — favourited targets
-with monitoring enabled get a higher queue band (:attr:`has_priority_bias`).
+When monitoring is enabled:
+    - The stream target's ``enabled`` flag is set to ``True``.
+    - The monitoring snapshot is left untouched — the next monitoring
+      cycle will evaluate the target normally.
 """
 
 from app.domain.shared.types import utc_now
@@ -13,8 +15,8 @@ from app.infrastructure.repositories.stream_target_repository import (
 # ── Command ────────────────────────────────────────────────────────────
 
 
-class MarkFavoriteCommand:
-    """Request: mark a stream target as a favourite."""
+class EnableMonitoringCommand:
+    """Request: enable monitoring for a stream target."""
 
     def __init__(self, stream_id: str) -> None:
         self.stream_id = stream_id
@@ -23,24 +25,24 @@ class MarkFavoriteCommand:
 # ── Handler ────────────────────────────────────────────────────────────
 
 
-class MarkFavoriteHandler:
-    """Handles :class:`MarkFavoriteCommand` — sets ``favorite = True``."""
+class EnableMonitoringHandler:
+    """Handles :class:`EnableMonitoringCommand` — enables monitoring."""
 
     def __init__(self, stream_target_repo: StreamTargetRepository) -> None:
-        self._repo = stream_target_repo
+        self._target_repo = stream_target_repo
 
-    def handle(self, cmd: MarkFavoriteCommand) -> None:
-        """Mark *stream_id* as favourite.
+    def handle(self, cmd: EnableMonitoringCommand) -> None:
+        """Enable monitoring for *stream_id*.
 
         Raises ``ValueError`` if the stream target does not exist.
-        Idempotent — no-op if already favourite.
+        Idempotent — no-op if already enabled.
         """
-        target = self._repo.get(cmd.stream_id)
+        target = self._target_repo.get(cmd.stream_id)
         if target is None:
             raise ValueError(f"Stream target {cmd.stream_id!r} not found")
 
-        # Idempotent — already favourite.
-        if target.favorite:
+        # Idempotent — already enabled.
+        if target.enabled:
             return
 
         now = utc_now()
@@ -49,6 +51,6 @@ class MarkFavoriteHandler:
             f.name: getattr(target, f.name)
             for f in target.__dataclass_fields__.values()
         }
-        kwargs["favorite"] = True
+        kwargs["enabled"] = True
         kwargs["updated_at"] = now
-        self._repo.save(target.__class__(**kwargs))
+        self._target_repo.save(target.__class__(**kwargs))

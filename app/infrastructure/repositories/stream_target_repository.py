@@ -75,6 +75,8 @@ _COLUMNS = (
 
 _PLACEHOLDERS = ", ".join(f":{c}" for c in _COLUMNS)
 _COLUMNS_CSV = ", ".join(_COLUMNS)
+# UPSERT SET clause — every column except the primary key.
+_UPDATE_SET = ", ".join(f"{c} = excluded.{c}" for c in _COLUMNS if c != "id")
 
 
 class StreamTargetRepository:
@@ -89,14 +91,23 @@ class StreamTargetRepository:
         self._db_path = db_path
 
     def save(self, target: StreamTarget) -> None:
-        """Insert or replace a stream target."""
+        """Insert a new stream target or update an existing one.
+
+        Uses ``INSERT … ON CONFLICT(id) DO UPDATE SET …`` (UPSERT) instead
+        of ``INSERT OR REPLACE`` so that the row is updated in-place without
+        a DELETE-then-INSERT cycle.  This avoids triggering ``ON DELETE
+        CASCADE`` on child tables (``monitoring_snapshots``,
+        ``recording_sessions``) that reference ``stream_targets`` — rows in
+        those tables are preserved across target updates.
+        """
         row = _to_row(target)
         with write_lock:
             conn = get_connection(self._db_path)
             try:
                 conn.execute(
-                    f"INSERT OR REPLACE INTO stream_targets ({_COLUMNS_CSV}) "
-                    f"VALUES ({_PLACEHOLDERS})",
+                    f"INSERT INTO stream_targets ({_COLUMNS_CSV}) "
+                    f"VALUES ({_PLACEHOLDERS}) "
+                    f"ON CONFLICT(id) DO UPDATE SET {_UPDATE_SET}",
                     row,
                 )
                 conn.commit()

@@ -86,6 +86,8 @@ _COLUMNS = (
 
 _PLACEHOLDERS = ", ".join(f":{c}" for c in _COLUMNS)
 _COLUMNS_CSV = ", ".join(_COLUMNS)
+# UPSERT SET clause — every column except the primary key.
+_UPDATE_SET = ", ".join(f"{c} = excluded.{c}" for c in _COLUMNS if c != "id")
 
 
 class RecordingSessionRepository:
@@ -100,14 +102,20 @@ class RecordingSessionRepository:
         self._db_path = db_path
 
     def save(self, session: RecordingSession) -> None:
-        """Insert or replace a recording session."""
+        """Insert a new recording session or update an existing one.
+
+        Uses ``INSERT … ON CONFLICT(id) DO UPDATE SET …`` (UPSERT) instead
+        of ``INSERT OR REPLACE`` for in-place updates.  This avoids rowid
+        churn and is consistent with the sibling repository conventions.
+        """
         row = _to_row(session)
         with write_lock:
             conn = get_connection(self._db_path)
             try:
                 conn.execute(
-                    f"INSERT OR REPLACE INTO recording_sessions ({_COLUMNS_CSV}) "
-                    f"VALUES ({_PLACEHOLDERS})",
+                    f"INSERT INTO recording_sessions ({_COLUMNS_CSV}) "
+                    f"VALUES ({_PLACEHOLDERS}) "
+                    f"ON CONFLICT(id) DO UPDATE SET {_UPDATE_SET}",
                     row,
                 )
                 conn.commit()

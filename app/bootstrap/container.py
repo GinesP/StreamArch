@@ -45,5 +45,9 @@ class Container:
     # ── Application handlers ──────────────────────────────────────
     add_stream_handler: object = None
     update_stream_handler: object = None
+    disable_monitoring_handler: object = None
+    enable_monitoring_handler: object = None
+    mark_favorite_handler: object = None
+    unmark_favorite_handler: object = None
     list_streams_handler: object = None
     get_dashboard_state_handler: object = None

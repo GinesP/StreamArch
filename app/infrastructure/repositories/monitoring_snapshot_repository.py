@@ -80,6 +80,8 @@ _COLUMNS = (
 
 _PLACEHOLDERS = ", ".join(f":{c}" for c in _COLUMNS)
 _COLUMNS_CSV = ", ".join(_COLUMNS)
+# UPSERT SET clause — every column except the primary key.
+_UPDATE_SET = ", ".join(f"{c} = excluded.{c}" for c in _COLUMNS if c != "stream_target_id")
 
 
 class MonitoringSnapshotRepository:
@@ -94,14 +96,21 @@ class MonitoringSnapshotRepository:
         self._db_path = db_path
 
     def save(self, snapshot: MonitoringSnapshot) -> None:
-        """Insert or replace a monitoring snapshot by target id."""
+        """Insert a new monitoring snapshot or update an existing one.
+
+        Uses ``INSERT … ON CONFLICT(stream_target_id) DO UPDATE SET …``
+        (UPSERT) instead of ``INSERT OR REPLACE`` for in-place updates.
+        This avoids unnecessary rowid changes and is consistent with the
+        sibling repository conventions.
+        """
         row = _to_row(snapshot)
         with write_lock:
             conn = get_connection(self._db_path)
             try:
                 conn.execute(
-                    f"INSERT OR REPLACE INTO monitoring_snapshots ({_COLUMNS_CSV}) "
-                    f"VALUES ({_PLACEHOLDERS})",
+                    f"INSERT INTO monitoring_snapshots ({_COLUMNS_CSV}) "
+                    f"VALUES ({_PLACEHOLDERS}) "
+                    f"ON CONFLICT(stream_target_id) DO UPDATE SET {_UPDATE_SET}",
                     row,
                 )
                 conn.commit()

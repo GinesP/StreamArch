@@ -14,6 +14,10 @@ And returns ``(json_data, http_status)``.
 from dataclasses import asdict
 
 from app.application.commands.add_stream import AddStreamCommand
+from app.application.commands.disable_monitoring import DisableMonitoringCommand
+from app.application.commands.enable_monitoring import EnableMonitoringCommand
+from app.application.commands.mark_favorite import MarkFavoriteCommand
+from app.application.commands.unmark_favorite import UnmarkFavoriteCommand
 from app.application.commands.update_stream import UpdateStreamCommand
 from app.application.queries.get_dashboard_state import GetDashboardStateQuery
 from app.application.queries.list_streams import ListStreamsQuery
@@ -77,6 +81,50 @@ def handle_dashboard_state(
     return asdict(dto), 200
 
 
+def handle_disable_monitoring(
+    container: Container, params: dict, body: dict | None
+) -> tuple[dict, int]:
+    """POST /api/v1/streams/{stream_id}/disable-monitoring — stop monitoring."""
+    stream_id = params.get("stream_id", "")
+    container.disable_monitoring_handler.handle(
+        DisableMonitoringCommand(stream_id=stream_id)
+    )
+    return {"status": "disabled"}, 200
+
+
+def handle_enable_monitoring(
+    container: Container, params: dict, body: dict | None
+) -> tuple[dict, int]:
+    """POST /api/v1/streams/{stream_id}/enable-monitoring — start monitoring."""
+    stream_id = params.get("stream_id", "")
+    container.enable_monitoring_handler.handle(
+        EnableMonitoringCommand(stream_id=stream_id)
+    )
+    return {"status": "enabled"}, 200
+
+
+def handle_mark_favorite(
+    container: Container, params: dict, body: dict | None
+) -> tuple[dict, int]:
+    """POST /api/v1/streams/{stream_id}/favorite — mark as favourite."""
+    stream_id = params.get("stream_id", "")
+    container.mark_favorite_handler.handle(
+        MarkFavoriteCommand(stream_id=stream_id)
+    )
+    return {"status": "favorited"}, 200
+
+
+def handle_unmark_favorite(
+    container: Container, params: dict, body: dict | None
+) -> tuple[dict, int]:
+    """DELETE /api/v1/streams/{stream_id}/favorite — unmark as favourite."""
+    stream_id = params.get("stream_id", "")
+    container.unmark_favorite_handler.handle(
+        UnmarkFavoriteCommand(stream_id=stream_id)
+    )
+    return {"status": "unfavorited"}, 200
+
+
 # ── Helpers ────────────────────────────────────────────────────────────
 
 
@@ -92,18 +140,38 @@ def _require(body: dict, key: str) -> str:
 
 
 def build_router() -> Router:
-    """Create and populate the route table for the first API slice.
+    """Create and populate the route table for the REST API.
 
     Current endpoints::
 
         GET    /api/v1/streams
         POST   /api/v1/streams
         PATCH  /api/v1/streams/{stream_id}
+        POST   /api/v1/streams/{stream_id}/disable-monitoring
+        POST   /api/v1/streams/{stream_id}/enable-monitoring
+        POST   /api/v1/streams/{stream_id}/favorite
+        DELETE /api/v1/streams/{stream_id}/favorite
         GET    /api/v1/dashboard/state
     """
     router = Router()
     router.add("GET", "/api/v1/streams", handle_list_streams)
     router.add("POST", "/api/v1/streams", handle_add_stream)
     router.add("PATCH", "/api/v1/streams/{stream_id}", handle_update_stream)
+    router.add(
+        "POST", "/api/v1/streams/{stream_id}/disable-monitoring",
+        handle_disable_monitoring,
+    )
+    router.add(
+        "POST", "/api/v1/streams/{stream_id}/enable-monitoring",
+        handle_enable_monitoring,
+    )
+    router.add(
+        "POST", "/api/v1/streams/{stream_id}/favorite",
+        handle_mark_favorite,
+    )
+    router.add(
+        "DELETE", "/api/v1/streams/{stream_id}/favorite",
+        handle_unmark_favorite,
+    )
     router.add("GET", "/api/v1/dashboard/state", handle_dashboard_state)
     return router

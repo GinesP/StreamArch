@@ -11,6 +11,10 @@ import threading
 from pathlib import Path
 
 from app.application.commands.add_stream import AddStreamHandler
+from app.application.commands.disable_monitoring import DisableMonitoringHandler
+from app.application.commands.enable_monitoring import EnableMonitoringHandler
+from app.application.commands.mark_favorite import MarkFavoriteHandler
+from app.application.commands.unmark_favorite import UnmarkFavoriteHandler
 from app.application.commands.update_stream import UpdateStreamHandler
 from app.application.queries.list_streams import ListStreamsHandler
 from app.application.queries.get_dashboard_state import GetDashboardStateHandler
@@ -75,6 +79,19 @@ def start_application(container: Container) -> None:
         monitoring_snapshot_repo=container.monitoring_snapshot_repo,
     )
     container.update_stream_handler = UpdateStreamHandler(
+        stream_target_repo=container.stream_target_repo,
+    )
+    container.disable_monitoring_handler = DisableMonitoringHandler(
+        stream_target_repo=container.stream_target_repo,
+        monitoring_snapshot_repo=container.monitoring_snapshot_repo,
+    )
+    container.enable_monitoring_handler = EnableMonitoringHandler(
+        stream_target_repo=container.stream_target_repo,
+    )
+    container.mark_favorite_handler = MarkFavoriteHandler(
+        stream_target_repo=container.stream_target_repo,
+    )
+    container.unmark_favorite_handler = UnmarkFavoriteHandler(
         stream_target_repo=container.stream_target_repo,
     )
     container.list_streams_handler = ListStreamsHandler(

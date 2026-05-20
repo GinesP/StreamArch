@@ -16,6 +16,22 @@ from http.server import HTTPServer
 import pytest
 
 from app.application.commands.add_stream import AddStreamCommand, AddStreamHandler
+from app.application.commands.disable_monitoring import (
+    DisableMonitoringCommand,
+    DisableMonitoringHandler,
+)
+from app.application.commands.enable_monitoring import (
+    EnableMonitoringCommand,
+    EnableMonitoringHandler,
+)
+from app.application.commands.mark_favorite import (
+    MarkFavoriteCommand,
+    MarkFavoriteHandler,
+)
+from app.application.commands.unmark_favorite import (
+    UnmarkFavoriteCommand,
+    UnmarkFavoriteHandler,
+)
 from app.application.commands.update_stream import UpdateStreamHandler
 from app.application.queries.get_dashboard_state import (
     GetDashboardStateHandler,
@@ -83,6 +99,19 @@ def container(db_path) -> Container:
     c.add_stream_handler = AddStreamHandler(
         stream_target_repo=c.stream_target_repo,
         monitoring_snapshot_repo=c.monitoring_snapshot_repo,
+    )
+    c.disable_monitoring_handler = DisableMonitoringHandler(
+        stream_target_repo=c.stream_target_repo,
+        monitoring_snapshot_repo=c.monitoring_snapshot_repo,
+    )
+    c.enable_monitoring_handler = EnableMonitoringHandler(
+        stream_target_repo=c.stream_target_repo,
+    )
+    c.mark_favorite_handler = MarkFavoriteHandler(
+        stream_target_repo=c.stream_target_repo,
+    )
+    c.unmark_favorite_handler = UnmarkFavoriteHandler(
+        stream_target_repo=c.stream_target_repo,
     )
     c.update_stream_handler = UpdateStreamHandler(
         stream_target_repo=c.stream_target_repo,
@@ -250,6 +279,148 @@ class TestApiContract:
 
         status, data = _json_request(
             conn, "PATCH", "/api/v1/streams/nonexistent", body
+        )
+        assert status == 400
+        assert "not found" in data["error"]["message"]
+
+    # ── disable / enable monitoring ─────────────────────────────────
+
+    def test_disable_monitoring(self, conn: HTTPConnection) -> None:
+        # Arrange — create a stream
+        _, create_data = _json_request(
+            conn,
+            "POST",
+            "/api/v1/streams",
+            {
+                "platform": "twitch",
+                "handle": "disable_me",
+                "source_url": "https://twitch.tv/disable_me",
+                "display_name": "Disable Me",
+            },
+        )
+        stream_id = create_data["id"]
+
+        # Act — disable
+        status, data = _json_request(
+            conn, "POST", f"/api/v1/streams/{stream_id}/disable-monitoring"
+        )
+        assert status == 200
+        assert data == {"status": "disabled"}
+
+        # Assert — list reflects the change
+        _, list_data = _json_request(conn, "GET", "/api/v1/streams")
+        item = next(i for i in list_data["items"] if i["id"] == stream_id)
+        assert item["enabled"] is False
+
+    def test_enable_monitoring(self, conn: HTTPConnection) -> None:
+        # Arrange — create a stream then disable it
+        _, create_data = _json_request(
+            conn,
+            "POST",
+            "/api/v1/streams",
+            {
+                "platform": "twitch",
+                "handle": "enable_me",
+                "source_url": "https://twitch.tv/enable_me",
+                "display_name": "Enable Me",
+            },
+        )
+        stream_id = create_data["id"]
+
+        _json_request(
+            conn, "POST", f"/api/v1/streams/{stream_id}/disable-monitoring"
+        )
+
+        # Act — enable
+        status, data = _json_request(
+            conn, "POST", f"/api/v1/streams/{stream_id}/enable-monitoring"
+        )
+        assert status == 200
+        assert data == {"status": "enabled"}
+
+        # Assert — list reflects the change
+        _, list_data = _json_request(conn, "GET", "/api/v1/streams")
+        item = next(i for i in list_data["items"] if i["id"] == stream_id)
+        assert item["enabled"] is True
+
+    def test_disable_monitoring_404_on_missing(self, conn: HTTPConnection) -> None:
+        status, data = _json_request(
+            conn, "POST", "/api/v1/streams/nonexistent/disable-monitoring"
+        )
+        assert status == 400
+        assert "not found" in data["error"]["message"]
+
+    def test_enable_monitoring_404_on_missing(self, conn: HTTPConnection) -> None:
+        status, data = _json_request(
+            conn, "POST", "/api/v1/streams/nonexistent/enable-monitoring"
+        )
+        assert status == 400
+        assert "not found" in data["error"]["message"]
+
+    # ── favorite / unfavorite ───────────────────────────────────────
+
+    def test_mark_favorite(self, conn: HTTPConnection) -> None:
+        _, create_data = _json_request(
+            conn,
+            "POST",
+            "/api/v1/streams",
+            {
+                "platform": "twitch",
+                "handle": "fav_user",
+                "source_url": "https://twitch.tv/fav_user",
+                "display_name": "Favorite User",
+            },
+        )
+        stream_id = create_data["id"]
+
+        status, data = _json_request(
+            conn, "POST", f"/api/v1/streams/{stream_id}/favorite"
+        )
+        assert status == 200
+        assert data == {"status": "favorited"}
+
+        _, list_data = _json_request(conn, "GET", "/api/v1/streams")
+        item = next(i for i in list_data["items"] if i["id"] == stream_id)
+        assert item["favorite"] is True
+
+    def test_unmark_favorite(self, conn: HTTPConnection) -> None:
+        _, create_data = _json_request(
+            conn,
+            "POST",
+            "/api/v1/streams",
+            {
+                "platform": "twitch",
+                "handle": "unfav_user",
+                "source_url": "https://twitch.tv/unfav_user",
+                "display_name": "Unfavorite User",
+            },
+        )
+        stream_id = create_data["id"]
+
+        # Mark it first
+        _json_request(conn, "POST", f"/api/v1/streams/{stream_id}/favorite")
+
+        # Then unmark
+        status, data = _json_request(
+            conn, "DELETE", f"/api/v1/streams/{stream_id}/favorite"
+        )
+        assert status == 200
+        assert data == {"status": "unfavorited"}
+
+        _, list_data = _json_request(conn, "GET", "/api/v1/streams")
+        item = next(i for i in list_data["items"] if i["id"] == stream_id)
+        assert item["favorite"] is False
+
+    def test_mark_favorite_404_on_missing(self, conn: HTTPConnection) -> None:
+        status, data = _json_request(
+            conn, "POST", "/api/v1/streams/nonexistent/favorite"
+        )
+        assert status == 400
+        assert "not found" in data["error"]["message"]
+
+    def test_unmark_favorite_404_on_missing(self, conn: HTTPConnection) -> None:
+        status, data = _json_request(
+            conn, "DELETE", "/api/v1/streams/nonexistent/favorite"
         )
         assert status == 400
         assert "not found" in data["error"]["message"]
