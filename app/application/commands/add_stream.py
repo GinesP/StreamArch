@@ -6,11 +6,10 @@ immediately visible in dashboards.
 """
 
 import uuid
-from datetime import datetime
 
 from app.domain.monitoring.snapshot import MonitoringSnapshot
 from app.domain.monitoring.states import MonitoringState
-from app.domain.shared.types import Confidence, Platform
+from app.domain.shared.types import Confidence, Platform, utc_now
 from app.domain.stream_target.entities import StreamTarget
 from app.domain.stream_target.value_objects import ScheduleMode
 from app.infrastructure.repositories.monitoring_snapshot_repository import (
@@ -88,7 +87,7 @@ class AddStreamHandler:
         """Execute and return the new stream target id."""
         _validate(cmd)
 
-        now = datetime.utcnow()
+        now = utc_now()
         target_id = str(uuid.uuid4())
 
         target = StreamTarget(

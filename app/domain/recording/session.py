@@ -19,7 +19,7 @@ Invariants:
 from dataclasses import dataclass
 from datetime import datetime
 
-from app.domain.shared.types import Platform, QueueBand, RecordingStatus
+from app.domain.shared.types import Platform, QueueBand, RecordingStatus, utc_now
 
 
 @dataclass
@@ -100,8 +100,8 @@ class RecordingSession:
                 f"Cannot complete session in status {self.status.value}"
             )
         self.status = RecordingStatus.COMPLETED
-        self.ended_at = ended_at or datetime.utcnow()
-        self.updated_at = datetime.utcnow()
+        self.ended_at = ended_at or utc_now()
+        self.updated_at = utc_now()
 
     def fail(self, error_code: str, error_message: str) -> None:
         """Mark the session as failed with an error."""
@@ -112,8 +112,8 @@ class RecordingSession:
         self.status = RecordingStatus.FAILED
         self.error_code = error_code
         self.error_message = error_message
-        self.ended_at = datetime.utcnow()
-        self.updated_at = datetime.utcnow()
+        self.ended_at = utc_now()
+        self.updated_at = utc_now()
 
     def abort(self, reason: str | None = None) -> None:
         """Abort the session (e.g. on shutdown or user request)."""
@@ -123,8 +123,8 @@ class RecordingSession:
             )
         self.status = RecordingStatus.ABORTED
         self.split_reason = reason
-        self.ended_at = datetime.utcnow()
-        self.updated_at = datetime.utcnow()
+        self.ended_at = utc_now()
+        self.updated_at = utc_now()
 
     def split(self, reason: str) -> None:
         """Split the session (e.g. stale gap, reconnect)."""
@@ -134,5 +134,5 @@ class RecordingSession:
             )
         self.status = RecordingStatus.SPLIT
         self.split_reason = reason
-        self.ended_at = datetime.utcnow()
-        self.updated_at = datetime.utcnow()
+        self.ended_at = utc_now()
+        self.updated_at = utc_now()

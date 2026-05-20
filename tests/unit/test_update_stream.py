@@ -1,7 +1,7 @@
 """Tests for UpdateStreamHandler."""
 
 import sqlite3
-from datetime import datetime, timedelta
+from datetime import timedelta
 
 import pytest
 
@@ -9,7 +9,7 @@ from app.application.commands.update_stream import (
     UpdateStreamCommand,
     UpdateStreamHandler,
 )
-from app.domain.shared.types import Platform
+from app.domain.shared.types import Platform, utc_now
 from app.domain.stream_target.entities import StreamTarget
 from app.domain.stream_target.value_objects import ScheduleMode
 from app.infrastructure.db.migrations import apply_migrations
@@ -20,7 +20,7 @@ from app.infrastructure.repositories.stream_target_repository import (
 
 def _insert_target(repo: StreamTargetRepository, **overrides) -> str:
     """Helper: insert a stream target and return its id."""
-    now = datetime.utcnow()
+    now = utc_now()
     target = StreamTarget(
         id=overrides.get("id", "test-id-1"),
         platform=overrides.get("platform", Platform.TWITCH),

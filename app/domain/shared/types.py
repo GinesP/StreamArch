@@ -4,7 +4,7 @@ Includes result wrappers, shared enums, and clock abstractions.
 """
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 from typing import Generic, TypeVar
 
@@ -27,6 +27,22 @@ class Err(Generic[E]):
 Result = Ok[T] | Err[E]
 
 
+# ── Policy: Timezone-aware UTC ───────────────────────────────────────
+#
+# Every datetime in the system MUST be timezone-aware and represent UTC.
+# Naive datetimes breed ambiguity — use `utc_now()` instead of
+# `datetime.utcnow()` (deprecated) or `datetime.now()` (local time).
+#
+# Persisted datetimes round-trip through `.isoformat()` →
+# `datetime.fromisoformat()`, which preserves the ``+00:00`` suffix.
+# ─────────────────────────────────────────────────────────────────────
+
+
+def utc_now() -> datetime:
+    """Return the current UTC time as a timezone-aware datetime."""
+    return datetime.now(timezone.utc)
+
+
 # ── Domain clock ─────────────────────────────────────────────────────
 
 
@@ -34,7 +50,7 @@ class DomainClock:
     """Abstract clock so domain logic stays testable."""
 
     def now(self) -> datetime:
-        return datetime.utcnow()
+        return utc_now()
 
 
 # ── Shared enums ─────────────────────────────────────────────────────

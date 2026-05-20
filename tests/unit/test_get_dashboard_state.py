@@ -1,7 +1,6 @@
 """Tests for GetDashboardStateHandler."""
 
 import sqlite3
-from datetime import datetime
 
 import pytest
 
@@ -11,7 +10,7 @@ from app.application.queries.get_dashboard_state import (
 )
 from app.domain.monitoring.snapshot import MonitoringSnapshot
 from app.domain.monitoring.states import MonitoringState
-from app.domain.shared.types import Confidence, Platform
+from app.domain.shared.types import Confidence, Platform, utc_now
 from app.domain.stream_target.entities import StreamTarget
 from app.domain.stream_target.value_objects import ScheduleMode
 from app.infrastructure.db.migrations import apply_migrations
@@ -24,7 +23,7 @@ from app.infrastructure.repositories.stream_target_repository import (
 
 
 def _insert_target(repo: StreamTargetRepository, **overrides) -> str:
-    now = datetime.utcnow()
+    now = utc_now()
     target = StreamTarget(
         id=overrides.get("id", f"target-{len(overrides)}"),
         platform=overrides.get("platform", Platform.TWITCH),
@@ -44,7 +43,7 @@ def _insert_target(repo: StreamTargetRepository, **overrides) -> str:
 
 
 def _insert_snapshot(repo: MonitoringSnapshotRepository, **overrides) -> None:
-    now = datetime.utcnow()
+    now = utc_now()
     snapshot = MonitoringSnapshot(
         stream_target_id=overrides["stream_target_id"],
         state=overrides.get("state", MonitoringState.IDLE),

@@ -5,8 +5,7 @@ Other mutations (schedule, recording state) are handled by dedicated
 orchestrators.
 """
 
-from datetime import datetime
-
+from app.domain.shared.types import utc_now
 from app.domain.stream_target.entities import StreamTarget
 from app.domain.stream_target.value_objects import ScheduleMode
 from app.infrastructure.repositories.stream_target_repository import (
@@ -78,7 +77,7 @@ class UpdateStreamHandler:
             else:
                 kwargs[field] = value
 
-        kwargs["updated_at"] = datetime.utcnow()
+        kwargs["updated_at"] = utc_now()
 
         updated = StreamTarget(**kwargs)
         self._repo.save(updated)
