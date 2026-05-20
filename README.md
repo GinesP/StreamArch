@@ -23,8 +23,9 @@ docs/                   # Architecture documentation
 
 ## Current status
 
-**Initial skeleton.** The package structure is in place with placeholder modules.
-No business logic has been implemented yet.
+**Bootstrap layer implemented.** The app starts, loads config (JSON file or
+defaults), configures console logging, and handles Ctrl+C gracefully. No
+business logic has been implemented yet.
 
 ## Architecture docs
 
@@ -50,5 +51,6 @@ All architecture decisions are documented in `docs/`:
 ## Development
 
 ```bash
-python -m app.main         # Run the core (stub)
+python -m app.main                            # Run with default config
+python -m app.main --config config.example.json  # Run with custom config
 ```

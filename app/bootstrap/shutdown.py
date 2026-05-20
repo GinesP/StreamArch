@@ -1,6 +1,8 @@
 """Graceful shutdown sequence for the core application.
 
-Closes DB, stops ffmpeg processes, persists state, and shuts down workers.
+Closes DB, stops workers, persists state, and shuts down cleanly.
+Currently a placeholder — the shutdown contract is established here
+and will be filled as subsystems are implemented.
 """
 
 from .container import Container
@@ -9,12 +11,11 @@ from .container import Container
 def shutdown_application(container: Container, reason: str = "shutdown") -> None:
     """Coordinate graceful shutdown of all subsystems.
 
-    Stub — actual shutdown logic TBD.
+    Args:
+        container: The wired application container.
+        reason: Short label for the shutdown cause (e.g. "shutdown",
+                "sigint", "error").
     """
-    # 1. Stop scheduler / workers
-    # 2. Close active recordings
-    # 3. Run post-processing if needed
-    # 4. Persist final state
-    # 5. Close DB
-    # 6. Stop event bus
-    pass
+    container.logger.info("Shutting down StreamArch core (reason: %s)…", reason)
+    # Future: close DB, stop scheduler, terminate ffmpeg, persist state
+    container.logger.info("Shutdown complete")

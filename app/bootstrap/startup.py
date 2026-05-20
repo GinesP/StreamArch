@@ -1,25 +1,33 @@
 """Application startup sequence.
 
-Loads config, opens DB, applies migrations, wires dependencies,
-and starts background workers.
+Loads config, configures logging, wires the dependency container.
 """
 
+from app.infrastructure.config.loader import AppConfig, load_config
+from app.infrastructure.logging.setup import setup_logging
 from .container import Container
 
 
 def create_container(config_path: str | None = None) -> Container:
-    """Build and return the fully wired dependency container.
+    """Build and return the wired dependency container.
 
-    This is a stub — actual wiring happens as components are implemented.
+    1. Load configuration (from file or defaults).
+    2. Configure the ``streamarch`` logger.
+    3. Return a ``Container`` carrying both.
     """
-    container = Container()
-    # TODO: wire actual dependencies here
-    return container
+    config: AppConfig = load_config(config_path)
+    logger = setup_logging(config.log_level, config.log_format)
+
+    source = f"file: {config_path}" if config_path else "defaults"
+    logger.info("Starting StreamArch core…")
+    logger.info("Config loaded from %s", source)
+
+    return Container(config=config, logger=logger)
 
 
 def start_application(container: Container) -> None:
-    """Boot the core — start scheduler, workers, and API server.
+    """Signal that the core is ready to operate.
 
-    Stub — actual startup sequence TBD.
+    Future: this will start the scheduler, workers, API server, etc.
     """
-    pass
+    container.logger.info("StreamArch core started successfully")

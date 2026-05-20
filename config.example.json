@@ -1,0 +1,14 @@
+{
+    "log_level": "DEBUG",
+    "log_format": "detailed",
+    "data_dir": "./data",
+    "db_path": "./data/streamarch.db",
+    "recordings_dir": "./data/recordings",
+    "max_concurrent_checks": 5,
+    "max_concurrent_recordings": 2,
+    "default_check_interval_seconds": 300,
+    "fast_band_interval_seconds": 60,
+    "medium_band_interval_seconds": 300,
+    "slow_band_interval_seconds": 900,
+    "db_pool_size": 1
+}
