@@ -3,6 +3,10 @@
 Maps between the domain :class:`StreamTarget` and the ``stream_targets``
 SQLite table.  Datetimes are stored as ISO-8601 text, booleans as 0/1,
 and enums as their string value.
+
+Each repository method creates its own short-lived SQLite connection.
+Write operations are serialized via :func:`write_lock` from the connection
+module.
 """
 
 import sqlite3
@@ -11,6 +15,7 @@ from datetime import datetime
 from app.domain.shared.types import Platform
 from app.domain.stream_target.entities import StreamTarget
 from app.domain.stream_target.value_objects import ScheduleMode
+from app.infrastructure.db.connection import get_connection, write_lock
 
 
 # ── Mapping helpers ──────────────────────────────────────────────────
@@ -73,32 +78,50 @@ _COLUMNS_CSV = ", ".join(_COLUMNS)
 
 
 class StreamTargetRepository:
-    """Persistence for :class:`StreamTarget` entities."""
+    """Persistence for :class:`StreamTarget` entities.
 
-    def __init__(self, connection: sqlite3.Connection) -> None:
-        self._conn = connection
+    Uses a *connection-per-operation* pattern — each method opens a
+    fresh SQLite connection and closes it when done.  Write operations
+    are serialised through a shared :data:`write_lock`.
+    """
+
+    def __init__(self, db_path: str) -> None:
+        self._db_path = db_path
 
     def save(self, target: StreamTarget) -> None:
         """Insert or replace a stream target."""
         row = _to_row(target)
-        self._conn.execute(
-            f"INSERT OR REPLACE INTO stream_targets ({_COLUMNS_CSV}) "
-            f"VALUES ({_PLACEHOLDERS})",
-            row,
-        )
-        self._conn.commit()
+        with write_lock:
+            conn = get_connection(self._db_path)
+            try:
+                conn.execute(
+                    f"INSERT OR REPLACE INTO stream_targets ({_COLUMNS_CSV}) "
+                    f"VALUES ({_PLACEHOLDERS})",
+                    row,
+                )
+                conn.commit()
+            finally:
+                conn.close()
 
     def get(self, target_id: str) -> StreamTarget | None:
         """Return a target by its id, or ``None`` if not found."""
-        row = self._conn.execute(
-            "SELECT * FROM stream_targets WHERE id = ?",
-            (target_id,),
-        ).fetchone()
-        return _from_row(row) if row is not None else None
+        conn = get_connection(self._db_path)
+        try:
+            row = conn.execute(
+                "SELECT * FROM stream_targets WHERE id = ?",
+                (target_id,),
+            ).fetchone()
+            return _from_row(row) if row is not None else None
+        finally:
+            conn.close()
 
     def list_all(self) -> list[StreamTarget]:
         """Return every stream target in the database."""
-        rows = self._conn.execute(
-            "SELECT * FROM stream_targets ORDER BY display_name"
-        ).fetchall()
-        return [_from_row(r) for r in rows]
+        conn = get_connection(self._db_path)
+        try:
+            rows = conn.execute(
+                "SELECT * FROM stream_targets ORDER BY display_name"
+            ).fetchall()
+            return [_from_row(r) for r in rows]
+        finally:
+            conn.close()

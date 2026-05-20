@@ -1,8 +1,5 @@
 """Tests for UpdateStreamHandler."""
 
-import sqlite3
-from datetime import timedelta
-
 import pytest
 
 from app.application.commands.update_stream import (
@@ -12,6 +9,7 @@ from app.application.commands.update_stream import (
 from app.domain.shared.types import Platform, utc_now
 from app.domain.stream_target.entities import StreamTarget
 from app.domain.stream_target.value_objects import ScheduleMode
+from app.infrastructure.db.connection import get_connection
 from app.infrastructure.db.migrations import apply_migrations
 from app.infrastructure.repositories.stream_target_repository import (
     StreamTargetRepository,
@@ -40,16 +38,19 @@ def _insert_target(repo: StreamTargetRepository, **overrides) -> str:
 
 
 @pytest.fixture
-def db() -> sqlite3.Connection:
-    conn = sqlite3.connect(":memory:")
-    conn.row_factory = sqlite3.Row
-    apply_migrations(conn)
-    return conn
+def db_path(tmp_path) -> str:
+    path = tmp_path / "test.db"
+    conn = get_connection(path)
+    try:
+        apply_migrations(conn)
+    finally:
+        conn.close()
+    return str(path)
 
 
 @pytest.fixture
-def repo(db) -> StreamTargetRepository:
-    return StreamTargetRepository(db)
+def repo(db_path) -> StreamTargetRepository:
+    return StreamTargetRepository(db_path)
 
 
 @pytest.fixture

@@ -28,7 +28,6 @@ class Container:
     # ── Infrastructure ────────────────────────────────────────────
     config: object = None
     logger: object = None
-    db_connection: object = None
     file_manager: object = None
 
     # ── Domain ────────────────────────────────────────────────────

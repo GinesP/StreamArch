@@ -1,8 +1,5 @@
 """Tests for AddStreamHandler."""
 
-import sqlite3
-from datetime import datetime, timedelta
-
 import pytest
 
 from app.application.commands.add_stream import (
@@ -11,6 +8,7 @@ from app.application.commands.add_stream import (
 )
 from app.domain.monitoring.states import MonitoringState
 from app.domain.shared.types import Confidence
+from app.infrastructure.db.connection import get_connection
 from app.infrastructure.db.migrations import apply_migrations
 from app.infrastructure.repositories.monitoring_snapshot_repository import (
     MonitoringSnapshotRepository,
@@ -21,23 +19,26 @@ from app.infrastructure.repositories.stream_target_repository import (
 
 
 @pytest.fixture
-def db() -> sqlite3.Connection:
-    conn = sqlite3.connect(":memory:")
-    conn.row_factory = sqlite3.Row
-    apply_migrations(conn)
-    return conn
+def db_path(tmp_path) -> str:
+    path = tmp_path / "test.db"
+    conn = get_connection(path)
+    try:
+        apply_migrations(conn)
+    finally:
+        conn.close()
+    return str(path)
 
 
 @pytest.fixture
-def handler(db) -> AddStreamHandler:
+def handler(db_path) -> AddStreamHandler:
     return AddStreamHandler(
-        stream_target_repo=StreamTargetRepository(db),
-        monitoring_snapshot_repo=MonitoringSnapshotRepository(db),
+        stream_target_repo=StreamTargetRepository(db_path),
+        monitoring_snapshot_repo=MonitoringSnapshotRepository(db_path),
     )
 
 
 class TestAddStreamHandler:
-    def test_creates_target_and_snapshot(self, handler, db) -> None:
+    def test_creates_target_and_snapshot(self, handler) -> None:
         cmd = AddStreamCommand(
             platform="twitch",
             handle="teststreamer",
@@ -65,7 +66,7 @@ class TestAddStreamHandler:
         assert snapshot.current_likelihood == 0.0
         assert snapshot.current_confidence == Confidence.LOW
 
-    def test_accepts_optional_fields(self, handler, db) -> None:
+    def test_accepts_optional_fields(self, handler) -> None:
         cmd = AddStreamCommand(
             platform="youtube",
             handle="ytchannel",
@@ -83,7 +84,7 @@ class TestAddStreamHandler:
         assert target.output_profile_id == "high_quality"
         assert target.schedule_mode.value == "hinted"
 
-    def test_rejects_empty_handle(self, handler, db) -> None:
+    def test_rejects_empty_handle(self, handler) -> None:
         cmd = AddStreamCommand(
             platform="twitch",
             handle="   ",
@@ -93,7 +94,7 @@ class TestAddStreamHandler:
         with pytest.raises(ValueError, match="handle must not be empty"):
             handler.handle(cmd)
 
-    def test_rejects_invalid_platform(self, handler, db) -> None:
+    def test_rejects_invalid_platform(self, handler) -> None:
         cmd = AddStreamCommand(
             platform="unsupported",
             handle="test",
@@ -103,7 +104,7 @@ class TestAddStreamHandler:
         with pytest.raises(ValueError, match="Invalid platform"):
             handler.handle(cmd)
 
-    def test_rejects_invalid_schedule_mode(self, handler, db) -> None:
+    def test_rejects_invalid_schedule_mode(self, handler) -> None:
         cmd = AddStreamCommand(
             platform="twitch",
             handle="test",
@@ -114,7 +115,7 @@ class TestAddStreamHandler:
         with pytest.raises(ValueError, match="Invalid schedule_mode"):
             handler.handle(cmd)
 
-    def test_returns_different_ids_each_time(self, handler, db) -> None:
+    def test_returns_different_ids_each_time(self, handler) -> None:
         cmd1 = AddStreamCommand(
             platform="twitch", handle="a", source_url="https://a.tv", display_name="A"
         )

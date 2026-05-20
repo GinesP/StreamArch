@@ -20,8 +20,6 @@ def shutdown_application(container: Container, reason: str = "shutdown") -> None
         container.api_server.shutdown()
         container.logger.info("REST API server stopped")
 
-    if container.db_connection is not None:
-        container.db_connection.close()
-        container.logger.info("Database connection closed")
-
+    # No shared database connection to close — repositories use
+    # connection-per-operation and manage their own lifecycle.
     container.logger.info("Shutdown complete")

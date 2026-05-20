@@ -1,8 +1,11 @@
 """Application startup sequence.
 
-Loads config, configures logging, opens the database, applies schema
-migrations, wires the dependency container with live repository
-instances, and finally instantiates the application-layer handlers.
+Loads config, configures logging, applies schema migrations, wires the
+dependency container with live repository instances, and finally
+instantiates the application-layer handlers.
+
+Repositories use a connection-per-operation pattern — no shared
+long-lived database connection is held in the container.
 """
 import threading
 from pathlib import Path
@@ -12,7 +15,7 @@ from app.application.commands.update_stream import UpdateStreamHandler
 from app.application.queries.list_streams import ListStreamsHandler
 from app.application.queries.get_dashboard_state import GetDashboardStateHandler
 from app.infrastructure.config.loader import AppConfig, load_config
-from app.infrastructure.db.connection import create_connection
+from app.infrastructure.db.connection import get_connection
 from app.infrastructure.db.migrations import apply_migrations
 from app.infrastructure.logging.setup import setup_logging
 from app.infrastructure.repositories.monitoring_snapshot_repository import (
@@ -53,14 +56,18 @@ def start_application(container: Container) -> None:
     and application handlers ready for use.
     """
     db_path = Path(container.config.db_path)
-    conn = create_connection(db_path)
-    apply_migrations(conn)
-    container.db_connection = conn
 
-    # ── Repositories ──────────────────────────────────────────────
-    container.stream_target_repo = StreamTargetRepository(conn)
-    container.monitoring_snapshot_repo = MonitoringSnapshotRepository(conn)
-    container.recording_session_repo = RecordingSessionRepository(conn)
+    # Run migrations with a temporary connection (closed after use).
+    conn = get_connection(db_path)
+    try:
+        apply_migrations(conn)
+    finally:
+        conn.close()
+
+    # ── Repositories (connection-per-operation) ───────────────────
+    container.stream_target_repo = StreamTargetRepository(str(db_path))
+    container.monitoring_snapshot_repo = MonitoringSnapshotRepository(str(db_path))
+    container.recording_session_repo = RecordingSessionRepository(str(db_path))
 
     # ── Application handlers ──────────────────────────────────────
     container.add_stream_handler = AddStreamHandler(

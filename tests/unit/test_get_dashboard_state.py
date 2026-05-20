@@ -1,7 +1,5 @@
 """Tests for GetDashboardStateHandler."""
 
-import sqlite3
-
 import pytest
 
 from app.application.queries.get_dashboard_state import (
@@ -13,6 +11,7 @@ from app.domain.monitoring.states import MonitoringState
 from app.domain.shared.types import Confidence, Platform, utc_now
 from app.domain.stream_target.entities import StreamTarget
 from app.domain.stream_target.value_objects import ScheduleMode
+from app.infrastructure.db.connection import get_connection
 from app.infrastructure.db.migrations import apply_migrations
 from app.infrastructure.repositories.monitoring_snapshot_repository import (
     MonitoringSnapshotRepository,
@@ -62,18 +61,21 @@ def _insert_snapshot(repo: MonitoringSnapshotRepository, **overrides) -> None:
 
 
 @pytest.fixture
-def db() -> sqlite3.Connection:
-    conn = sqlite3.connect(":memory:")
-    conn.row_factory = sqlite3.Row
-    apply_migrations(conn)
-    return conn
+def db_path(tmp_path) -> str:
+    path = tmp_path / "test.db"
+    conn = get_connection(path)
+    try:
+        apply_migrations(conn)
+    finally:
+        conn.close()
+    return str(path)
 
 
 @pytest.fixture
-def handler(db) -> GetDashboardStateHandler:
+def handler(db_path) -> GetDashboardStateHandler:
     return GetDashboardStateHandler(
-        stream_target_repo=StreamTargetRepository(db),
-        monitoring_snapshot_repo=MonitoringSnapshotRepository(db),
+        stream_target_repo=StreamTargetRepository(db_path),
+        monitoring_snapshot_repo=MonitoringSnapshotRepository(db_path),
     )
 
 

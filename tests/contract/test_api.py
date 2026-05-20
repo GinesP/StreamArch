@@ -1,12 +1,14 @@
 """Contract tests for the REST API.
 
-Tests the HTTP surface directly — uses an in-memory SQLite database
-and a real ``HTTPServer`` on a random local port.
+Tests the HTTP surface directly — uses a temporary file-based SQLite
+database and a real ``HTTPServer`` on a random local port.
+
+The database is connection-per-operation (same as production), so each
+request handler creates its own short-lived connections.
 """
 
 import json
 import socket
-import sqlite3
 import threading
 from http.client import HTTPConnection
 from http.server import HTTPServer
@@ -21,6 +23,7 @@ from app.application.queries.get_dashboard_state import (
 )
 from app.application.queries.list_streams import ListStreamsHandler, ListStreamsQuery
 from app.bootstrap.container import Container
+from app.infrastructure.db.connection import get_connection
 from app.infrastructure.db.migrations import apply_migrations
 from app.infrastructure.repositories.monitoring_snapshot_repository import (
     MonitoringSnapshotRepository,
@@ -60,18 +63,22 @@ def _json_request(
 
 
 @pytest.fixture
-def db() -> sqlite3.Connection:
-    conn = sqlite3.connect(":memory:", check_same_thread=False)
-    conn.row_factory = sqlite3.Row
-    apply_migrations(conn)
-    return conn
+def db_path(tmp_path) -> str:
+    """Create a temp database with schema applied."""
+    path = tmp_path / "test.db"
+    conn = get_connection(path)
+    try:
+        apply_migrations(conn)
+    finally:
+        conn.close()
+    return str(path)
 
 
 @pytest.fixture
-def container(db) -> Container:
+def container(db_path) -> Container:
     c = Container()
-    c.stream_target_repo = StreamTargetRepository(db)
-    c.monitoring_snapshot_repo = MonitoringSnapshotRepository(db)
+    c.stream_target_repo = StreamTargetRepository(db_path)
+    c.monitoring_snapshot_repo = MonitoringSnapshotRepository(db_path)
 
     c.add_stream_handler = AddStreamHandler(
         stream_target_repo=c.stream_target_repo,

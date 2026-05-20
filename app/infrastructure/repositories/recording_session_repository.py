@@ -2,6 +2,10 @@
 
 Maps between the domain :class:`RecordingSession` and the
 ``recording_sessions`` SQLite table.
+
+Each repository method creates its own short-lived SQLite connection.
+Write operations are serialized via :func:`write_lock` from the connection
+module.
 """
 
 import sqlite3
@@ -9,6 +13,7 @@ from datetime import datetime
 
 from app.domain.recording.session import RecordingSession
 from app.domain.shared.types import Platform, QueueBand, RecordingStatus
+from app.infrastructure.db.connection import get_connection, write_lock
 
 
 # ── Mapping helpers ──────────────────────────────────────────────────
@@ -84,34 +89,52 @@ _COLUMNS_CSV = ", ".join(_COLUMNS)
 
 
 class RecordingSessionRepository:
-    """Persistence for :class:`RecordingSession` entities."""
+    """Persistence for :class:`RecordingSession` entities.
 
-    def __init__(self, connection: sqlite3.Connection) -> None:
-        self._conn = connection
+    Uses a *connection-per-operation* pattern — each method opens a
+    fresh SQLite connection and closes it when done.  Write operations
+    are serialised through a shared :data:`write_lock`.
+    """
+
+    def __init__(self, db_path: str) -> None:
+        self._db_path = db_path
 
     def save(self, session: RecordingSession) -> None:
         """Insert or replace a recording session."""
         row = _to_row(session)
-        self._conn.execute(
-            f"INSERT OR REPLACE INTO recording_sessions ({_COLUMNS_CSV}) "
-            f"VALUES ({_PLACEHOLDERS})",
-            row,
-        )
-        self._conn.commit()
+        with write_lock:
+            conn = get_connection(self._db_path)
+            try:
+                conn.execute(
+                    f"INSERT OR REPLACE INTO recording_sessions ({_COLUMNS_CSV}) "
+                    f"VALUES ({_PLACEHOLDERS})",
+                    row,
+                )
+                conn.commit()
+            finally:
+                conn.close()
 
     def get(self, session_id: str) -> RecordingSession | None:
         """Return a session by its id, or ``None``."""
-        row = self._conn.execute(
-            "SELECT * FROM recording_sessions WHERE id = ?",
-            (session_id,),
-        ).fetchone()
-        return _from_row(row) if row is not None else None
+        conn = get_connection(self._db_path)
+        try:
+            row = conn.execute(
+                "SELECT * FROM recording_sessions WHERE id = ?",
+                (session_id,),
+            ).fetchone()
+            return _from_row(row) if row is not None else None
+        finally:
+            conn.close()
 
     def list_by_target(self, stream_target_id: str) -> list[RecordingSession]:
         """Return all sessions for a given target, newest first."""
-        rows = self._conn.execute(
-            "SELECT * FROM recording_sessions WHERE stream_target_id = ? "
-            "ORDER BY started_at DESC",
-            (stream_target_id,),
-        ).fetchall()
-        return [_from_row(r) for r in rows]
+        conn = get_connection(self._db_path)
+        try:
+            rows = conn.execute(
+                "SELECT * FROM recording_sessions WHERE stream_target_id = ? "
+                "ORDER BY started_at DESC",
+                (stream_target_id,),
+            ).fetchall()
+            return [_from_row(r) for r in rows]
+        finally:
+            conn.close()

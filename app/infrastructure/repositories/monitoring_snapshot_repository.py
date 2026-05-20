@@ -4,6 +4,10 @@ Maps between the domain :class:`MonitoringSnapshot` and the
 ``monitoring_snapshots`` SQLite table.  Because the PK is also the FK
 to ``stream_targets``, the ``get`` method serves as both lookup-by-id
 and ``get_by_stream_target_id``.
+
+Each repository method creates its own short-lived SQLite connection.
+Write operations are serialized via :func:`write_lock` from the connection
+module.
 """
 
 import sqlite3
@@ -12,6 +16,7 @@ from datetime import datetime
 from app.domain.monitoring.snapshot import MonitoringSnapshot
 from app.domain.monitoring.states import MonitoringState
 from app.domain.shared.types import Confidence, QueueBand
+from app.infrastructure.db.connection import get_connection, write_lock
 
 
 # ── Mapping helpers ──────────────────────────────────────────────────
@@ -78,32 +83,50 @@ _COLUMNS_CSV = ", ".join(_COLUMNS)
 
 
 class MonitoringSnapshotRepository:
-    """Persistence for :class:`MonitoringSnapshot` snapshots."""
+    """Persistence for :class:`MonitoringSnapshot` snapshots.
 
-    def __init__(self, connection: sqlite3.Connection) -> None:
-        self._conn = connection
+    Uses a *connection-per-operation* pattern — each method opens a
+    fresh SQLite connection and closes it when done.  Write operations
+    are serialised through a shared :data:`write_lock`.
+    """
+
+    def __init__(self, db_path: str) -> None:
+        self._db_path = db_path
 
     def save(self, snapshot: MonitoringSnapshot) -> None:
         """Insert or replace a monitoring snapshot by target id."""
         row = _to_row(snapshot)
-        self._conn.execute(
-            f"INSERT OR REPLACE INTO monitoring_snapshots ({_COLUMNS_CSV}) "
-            f"VALUES ({_PLACEHOLDERS})",
-            row,
-        )
-        self._conn.commit()
+        with write_lock:
+            conn = get_connection(self._db_path)
+            try:
+                conn.execute(
+                    f"INSERT OR REPLACE INTO monitoring_snapshots ({_COLUMNS_CSV}) "
+                    f"VALUES ({_PLACEHOLDERS})",
+                    row,
+                )
+                conn.commit()
+            finally:
+                conn.close()
 
     def get(self, stream_target_id: str) -> MonitoringSnapshot | None:
         """Return the snapshot for *stream_target_id*, or ``None``."""
-        row = self._conn.execute(
-            "SELECT * FROM monitoring_snapshots WHERE stream_target_id = ?",
-            (stream_target_id,),
-        ).fetchone()
-        return _from_row(row) if row is not None else None
+        conn = get_connection(self._db_path)
+        try:
+            row = conn.execute(
+                "SELECT * FROM monitoring_snapshots WHERE stream_target_id = ?",
+                (stream_target_id,),
+            ).fetchone()
+            return _from_row(row) if row is not None else None
+        finally:
+            conn.close()
 
     def list_all(self) -> list[MonitoringSnapshot]:
         """Return all monitoring snapshots."""
-        rows = self._conn.execute(
-            "SELECT * FROM monitoring_snapshots ORDER BY stream_target_id"
-        ).fetchall()
-        return [_from_row(r) for r in rows]
+        conn = get_connection(self._db_path)
+        try:
+            rows = conn.execute(
+                "SELECT * FROM monitoring_snapshots ORDER BY stream_target_id"
+            ).fetchall()
+            return [_from_row(r) for r in rows]
+        finally:
+            conn.close()
