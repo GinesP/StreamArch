@@ -1,0 +1,1 @@
+# FFmpeg — recording engine adapters.

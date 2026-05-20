@@ -1,0 +1,1 @@
+# DTOs — contracts between layers.
