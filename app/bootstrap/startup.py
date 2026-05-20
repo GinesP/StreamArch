@@ -4,7 +4,7 @@ Loads config, configures logging, opens the database, applies schema
 migrations, wires the dependency container with live repository
 instances, and finally instantiates the application-layer handlers.
 """
-
+import threading
 from pathlib import Path
 
 from app.application.commands.add_stream import AddStreamHandler
@@ -24,6 +24,8 @@ from app.infrastructure.repositories.recording_session_repository import (
 from app.infrastructure.repositories.stream_target_repository import (
     StreamTargetRepository,
 )
+from app.interfaces.api.routes import build_router
+from app.interfaces.api.server import create_server
 from .container import Container
 
 
@@ -77,5 +79,22 @@ def start_application(container: Container) -> None:
         monitoring_snapshot_repo=container.monitoring_snapshot_repo,
     )
 
+    # ── REST API server ──────────────────────────────────────────
+    router = build_router()
+    server = create_server(
+        host=container.config.api_host,
+        port=container.config.api_port,
+        container=container,
+        router=router,
+    )
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    container.api_server = server
+
     container.logger.info("Database ready at %s", db_path)
+    container.logger.info(
+        "REST API listening on %s:%s",
+        container.config.api_host,
+        container.config.api_port,
+    )
     container.logger.info("StreamArch core started successfully")

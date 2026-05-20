@@ -39,6 +39,10 @@ class AppConfig:
     medium_band_interval_seconds: int = field(default=300)
     slow_band_interval_seconds: int = field(default=900)
 
+    # ── API ──────────────────────────────────────────────────────
+    api_host: str = field(default="127.0.0.1")
+    api_port: int = field(default=8899)
+
     # ── Database ─────────────────────────────────────────────────
     db_pool_size: int = field(default=1)
 

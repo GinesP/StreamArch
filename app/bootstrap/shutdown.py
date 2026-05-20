@@ -16,6 +16,10 @@ def shutdown_application(container: Container, reason: str = "shutdown") -> None
     """
     container.logger.info("Shutting down StreamArch core (reason: %s)…", reason)
 
+    if container.api_server is not None:
+        container.api_server.shutdown()
+        container.logger.info("REST API server stopped")
+
     if container.db_connection is not None:
         container.db_connection.close()
         container.logger.info("Database connection closed")

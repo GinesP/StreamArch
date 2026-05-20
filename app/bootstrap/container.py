@@ -36,6 +36,7 @@ class Container:
 
     # ── Interfaces ────────────────────────────────────────────────
     websocket_handler: object = None
+    api_server: object = None
 
     # ── Orchestrators ─────────────────────────────────────────────
     monitoring_cycle: object = None

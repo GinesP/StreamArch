@@ -23,12 +23,28 @@ docs/                   # Architecture documentation
 
 ## Current status
 
-**Bootstrap + initial persistence layer implemented.** The app starts,
-loads config (JSON file or defaults), configures console logging,
-opens a SQLite database with WAL mode, applies the initial schema,
-and handles Ctrl+C gracefully (closes the DB on shutdown).
+**Bootstrap + initial persistence layer + REST API slice implemented.**
+The app starts, loads config (JSON file or defaults), configures console
+logging, opens a SQLite database with WAL mode, applies the initial schema,
+starts the REST API server, and handles Ctrl+C gracefully (shuts down
+API server, closes the DB).
 
-Three core repositories are wired and ready:
+### REST API
+
+A minimal stdlib HTTP server exposes the following endpoints (no external
+framework required):
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/api/v1/streams` | List all streams with current monitoring state |
+| `POST` | `/api/v1/streams` | Create a new stream target |
+| `PATCH` | `/api/v1/streams/{stream_id}` | Update stream target fields |
+| `GET` | `/api/v1/dashboard/state` | Aggregate dashboard state |
+
+The server listens on `127.0.0.1:8899` by default (configurable via
+`api_host` / `api_port` in the JSON config or `config.example.json`).
+
+### Repositories
 
 | Repository | Operations |
 |-----------|------------|

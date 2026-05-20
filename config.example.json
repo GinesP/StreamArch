@@ -10,5 +10,7 @@
     "fast_band_interval_seconds": 60,
     "medium_band_interval_seconds": 300,
     "slow_band_interval_seconds": 900,
-    "db_pool_size": 1
+    "db_pool_size": 1,
+    "api_host": "127.0.0.1",
+    "api_port": 8899
 }
