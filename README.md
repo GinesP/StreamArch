@@ -23,9 +23,18 @@ docs/                   # Architecture documentation
 
 ## Current status
 
-**Bootstrap layer implemented.** The app starts, loads config (JSON file or
-defaults), configures console logging, and handles Ctrl+C gracefully. No
-business logic has been implemented yet.
+**Bootstrap + initial persistence layer implemented.** The app starts,
+loads config (JSON file or defaults), configures console logging,
+opens a SQLite database with WAL mode, applies the initial schema,
+and handles Ctrl+C gracefully (closes the DB on shutdown).
+
+Three core repositories are wired and ready:
+
+| Repository | Operations |
+|-----------|------------|
+| `StreamTargetRepository` | save (upsert), get by id, list all |
+| `MonitoringSnapshotRepository` | save (upsert), get by target id, list all |
+| `RecordingSessionRepository` | save (upsert), get by id, list by target |
 
 ## Architecture docs
 
