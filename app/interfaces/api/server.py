@@ -20,7 +20,7 @@ import logging
 import re
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from typing import Any, Callable
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
 from app.bootstrap.container import Container
 
@@ -127,6 +127,14 @@ class APIHandler(BaseHTTPRequestHandler):
         path = parsed.path
 
         handler_fn, params = self.router.dispatch(self.command, path)
+
+        # Merge query-string parameters into the params dict so handlers
+        # can access both path captures and query parameters from the same
+        # ``params`` argument.  For repeated keys only the first value is
+        # kept — sufficient for our current needs.
+        if parsed.query:
+            for key, values in parse_qs(parsed.query).items():
+                params.setdefault(key, values[0])
 
         if handler_fn is None:
             self._send_json(

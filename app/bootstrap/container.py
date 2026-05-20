@@ -51,3 +51,4 @@ class Container:
     unmark_favorite_handler: object = None
     list_streams_handler: object = None
     get_dashboard_state_handler: object = None
+    list_recordings_handler: object = None

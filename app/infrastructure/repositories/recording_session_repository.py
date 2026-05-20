@@ -134,6 +134,17 @@ class RecordingSessionRepository:
         finally:
             conn.close()
 
+    def list_all(self) -> list[RecordingSession]:
+        """Return every recording session in the database, newest first."""
+        conn = get_connection(self._db_path)
+        try:
+            rows = conn.execute(
+                "SELECT * FROM recording_sessions ORDER BY started_at DESC"
+            ).fetchall()
+            return [_from_row(r) for r in rows]
+        finally:
+            conn.close()
+
     def list_by_target(self, stream_target_id: str) -> list[RecordingSession]:
         """Return all sessions for a given target, newest first."""
         conn = get_connection(self._db_path)

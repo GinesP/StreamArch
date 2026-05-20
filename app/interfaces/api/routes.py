@@ -20,6 +20,7 @@ from app.application.commands.mark_favorite import MarkFavoriteCommand
 from app.application.commands.unmark_favorite import UnmarkFavoriteCommand
 from app.application.commands.update_stream import UpdateStreamCommand
 from app.application.queries.get_dashboard_state import GetDashboardStateQuery
+from app.application.queries.list_recordings import ListRecordingsQuery
 from app.application.queries.list_streams import ListStreamsQuery
 from app.bootstrap.container import Container
 from app.interfaces.api.server import Router
@@ -125,6 +126,22 @@ def handle_unmark_favorite(
     return {"status": "unfavorited"}, 200
 
 
+def handle_list_recordings(
+    container: Container, params: dict, body: dict | None
+) -> tuple[dict, int]:
+    """GET /api/v1/recordings — list recording sessions.
+
+    Supports an optional ``stream_id`` query parameter to filter by target::
+
+        GET /api/v1/recordings?stream_id=abc-123
+    """
+    stream_id = params.get("stream_id")
+    dtos = container.list_recordings_handler.handle(
+        ListRecordingsQuery(stream_id=stream_id)
+    )
+    return {"items": [asdict(d) for d in dtos]}, 200
+
+
 # ── Helpers ────────────────────────────────────────────────────────────
 
 
@@ -152,6 +169,7 @@ def build_router() -> Router:
         POST   /api/v1/streams/{stream_id}/favorite
         DELETE /api/v1/streams/{stream_id}/favorite
         GET    /api/v1/dashboard/state
+        GET    /api/v1/recordings
     """
     router = Router()
     router.add("GET", "/api/v1/streams", handle_list_streams)
@@ -174,4 +192,5 @@ def build_router() -> Router:
         handle_unmark_favorite,
     )
     router.add("GET", "/api/v1/dashboard/state", handle_dashboard_state)
+    router.add("GET", "/api/v1/recordings", handle_list_recordings)
     return router

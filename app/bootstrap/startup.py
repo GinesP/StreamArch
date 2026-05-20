@@ -16,6 +16,7 @@ from app.application.commands.enable_monitoring import EnableMonitoringHandler
 from app.application.commands.mark_favorite import MarkFavoriteHandler
 from app.application.commands.unmark_favorite import UnmarkFavoriteHandler
 from app.application.commands.update_stream import UpdateStreamHandler
+from app.application.queries.list_recordings import ListRecordingsHandler
 from app.application.queries.list_streams import ListStreamsHandler
 from app.application.queries.get_dashboard_state import GetDashboardStateHandler
 from app.infrastructure.config.loader import AppConfig, load_config
@@ -101,6 +102,9 @@ def start_application(container: Container) -> None:
     container.get_dashboard_state_handler = GetDashboardStateHandler(
         stream_target_repo=container.stream_target_repo,
         monitoring_snapshot_repo=container.monitoring_snapshot_repo,
+    )
+    container.list_recordings_handler = ListRecordingsHandler(
+        recording_session_repo=container.recording_session_repo,
     )
 
     # ── REST API server ──────────────────────────────────────────
