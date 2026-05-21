@@ -8,6 +8,9 @@ version = "0.1.0"
 description = "Stream monitoring and recording core engine"
 requires-python = ">=3.11"
 license = {text = "MIT"}
+dependencies = [
+    "streamget>=4.0.8",
+]
 
 [tool.setuptools.packages.find]
 include = ["app*", "tests*"]

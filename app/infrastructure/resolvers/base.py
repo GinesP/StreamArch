@@ -8,14 +8,15 @@ Subclasses override ``resolve()`` and call ``self.get_cookie_string()``
 when the downstream tool needs authentication cookies::
 
     class MyResolver(BaseResolver):
-        def resolve(self, url: str) -> str | None:
+        def resolve(self, url: str) -> ResolveResult:
             cookies = self.get_cookie_string()
             # ... hand cookies to the tool ...
-            return None
+            return ResolveResult(is_live=False)
 """
 
 from app.application.services.cookie_service import CookieService
 from app.domain.shared.types import Platform
+from app.infrastructure.resolvers.result import ResolveResult
 
 
 class BaseResolver:
@@ -53,8 +54,8 @@ class BaseResolver:
             return ""
         return self._cookie_service.get_cookie_string(self._platform.value)
 
-    def resolve(self, url: str) -> str | None:
-        """Resolve *url* to a playable stream URI.
+    def resolve(self, url: str) -> ResolveResult:
+        """Resolve *url* to a stream resolution result.
 
         Subclasses MUST override this method.
         """
