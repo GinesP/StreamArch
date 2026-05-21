@@ -42,6 +42,9 @@ from app.infrastructure.repositories.recording_session_repository import (
 from app.infrastructure.repositories.stream_target_repository import (
     StreamTargetRepository,
 )
+from app.infrastructure.scheduler.platform_semaphores import PlatformSemaphores
+from app.infrastructure.scheduler.queue_planner import QueuePlanner
+from app.infrastructure.scheduler.worker_pool import WorkerPool
 from app.interfaces.api.routes import build_router
 from app.interfaces.api.server import create_server
 from .container import Container
@@ -110,15 +113,25 @@ def start_application(container: Container) -> None:
         monitoring_snapshot_repo=container.monitoring_snapshot_repo,
     )
 
-    # ── Prediction engine & monitoring cycle ──────────────────────
+    # ── Prediction engine & priority queue system ─────────────────
     container.prediction_engine = PredictionEngine()
+
+    container.platform_semaphores = PlatformSemaphores(default_limit=3)
+    container.queue_planner = QueuePlanner()
+    container.worker_pool = WorkerPool(
+        queue_planner=container.queue_planner,
+        live_check_service=container.live_check_service,
+        platform_semaphores=container.platform_semaphores,
+        logger=container.logger,
+    )
+    container.worker_pool.start()
 
     container.monitoring_cycle = MonitoringCycle(
         prediction_engine=container.prediction_engine,
-        live_check_service=container.live_check_service,
         stream_target_repo=container.stream_target_repo,
         monitoring_snapshot_repo=container.monitoring_snapshot_repo,
         recording_session_repo=container.recording_session_repo,
+        queue_planner=container.queue_planner,
         logger=container.logger,
     )
     container.monitoring_cycle.start()

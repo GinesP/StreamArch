@@ -1,16 +1,19 @@
-"""MonitoringCycle — runs in a background thread, periodically checking
-all enabled stream targets, computing predictions, and triggering live
-checks when needed.
+"""MonitoringCycle — runs in a background thread, periodically evaluating
+all enabled stream targets, computing predictions, and enqueuing due
+live checks to the priority queue system.
 
 Flow per cycle
 --------------
 1. Load all enabled ``StreamTarget`` s.
 2. For each target, load its ``MonitoringSnapshot``.
-3. Check if a live check is due (no ``next_check_at`` or it's in the past).
-4. If due, run ``LiveCheckService.check_stream()`` and re-read the
-   updated snapshot.
-5. Compute a fresh ``PredictionResult`` via ``PredictionEngine``.
-6. Persist the updated prediction state with a jittered ``next_check_at``.
+3. Compute a fresh ``PredictionResult`` via ``PredictionEngine``.
+4. Persist the updated prediction state with a jittered ``next_check_at``.
+5. If a live check is due (no ``next_check_at`` or it is in the past),
+   enqueue the target to the ``QueuePlanner`` so the ``WorkerPool``
+   processes it asynchronously.
+
+This replaces the previous inline ``check_stream()`` call — the actual
+HTTP resolution now happens in worker threads managed by ``WorkerPool``.
 """
 
 import logging
@@ -20,7 +23,11 @@ from datetime import datetime, timedelta
 from app.domain.monitoring.snapshot import MonitoringSnapshot
 from app.domain.monitoring.states import MonitoringState
 from app.domain.prediction.engine import PredictionEngine
-from app.domain.prediction.policy import apply_jitter, get_interval_seconds, get_queue_band
+from app.domain.prediction.policy import (
+    apply_jitter,
+    get_interval_seconds,
+    get_queue_band,
+)
 from app.domain.shared.types import Confidence, utc_now
 from app.domain.stream_target.entities import StreamTarget
 from app.infrastructure.repositories.monitoring_snapshot_repository import (
@@ -32,23 +39,24 @@ from app.infrastructure.repositories.recording_session_repository import (
 from app.infrastructure.repositories.stream_target_repository import (
     StreamTargetRepository,
 )
-from app.application.services.live_check_service import LiveCheckService
+from app.infrastructure.scheduler.queue_planner import QueuePlanner
 
 
 class MonitoringCycle:
     """Orchestrates the monitoring loop in a background thread.
 
-    On each cycle every enabled target is evaluated sequentially (no
-    parallel workers yet).  The class uses a ``threading.Event`` for
-    clean shutdown — call ``stop()`` to signal the loop to exit.
+    On each cycle every enabled target is evaluated sequentially.  Targets
+    that are due for a live check are enqueued to the ``QueuePlanner``
+    instead of being checked inline — workers (see ``WorkerPool``) process
+    them concurrently.
+
+    The class uses a ``threading.Event`` for clean shutdown — call
+    ``stop()`` to signal the loop to exit.
 
     Parameters
     ----------
     prediction_engine:
         Domain engine that computes likelihood, confidence, and UI state.
-    live_check_service:
-        Application service that runs the resolver chain and persists
-        check results.
     stream_target_repo:
         Repository for ``StreamTarget`` entities.
     monitoring_snapshot_repo:
@@ -56,6 +64,9 @@ class MonitoringCycle:
     recording_session_repo:
         Repository for ``RecordingSession`` entities (used to count past
         sessions for prediction consistency).
+    queue_planner:
+        Shared ``QueuePlanner`` to which due targets are enqueued for
+        async processing by the ``WorkerPool``.
     logger:
         Logger for cycle-level and per-target log messages.
     loop_interval_seconds:
@@ -67,19 +78,19 @@ class MonitoringCycle:
     def __init__(
         self,
         prediction_engine: PredictionEngine,
-        live_check_service: LiveCheckService,
         stream_target_repo: StreamTargetRepository,
         monitoring_snapshot_repo: MonitoringSnapshotRepository,
         recording_session_repo: RecordingSessionRepository,
+        queue_planner: QueuePlanner,
         logger: logging.Logger,
         loop_interval_seconds: int = 15,
         period_days: float = 30.0,
     ) -> None:
         self._prediction_engine = prediction_engine
-        self._live_check_service = live_check_service
         self._target_repo = stream_target_repo
         self._snapshot_repo = monitoring_snapshot_repo
         self._session_repo = recording_session_repo
+        self._queue_planner = queue_planner
         self._logger = logger
         self._loop_interval = loop_interval_seconds
         self._period_days = period_days
@@ -167,10 +178,12 @@ class MonitoringCycle:
 
         processed = 0
         errors = 0
+        enqueued = 0
 
         for target in enabled:
             try:
-                self._process_target(target)
+                if self._process_target(target):
+                    enqueued += 1
                 processed += 1
             except Exception:
                 self._logger.exception(
@@ -181,29 +194,35 @@ class MonitoringCycle:
                 errors += 1
 
         self._logger.info(
-            "Monitoring cycle complete: %d/%d targets processed, %d errors",
+            "Monitoring cycle complete: %d/%d targets processed, "
+            "%d enqueued, %d errors",
             processed,
             len(enabled),
+            enqueued,
             errors,
         )
 
     # ── Per-target processing ─────────────────────────────────────────
 
-    def _process_target(self, target: StreamTarget) -> None:
+    def _process_target(self, target: StreamTarget) -> bool:
         """Run one monitoring iteration for a single stream target.
 
         Steps
         -----
-        1. Load the target's ``MonitoringSnapshot``.
-        2. If no snapshot exists yet, create a default one.
-        3. If ``next_check_at`` is ``None`` or in the past, trigger
-           a live check via ``LiveCheckService.check_stream()``, then
-           re-read the snapshot (the service may have updated it).
-        4. Count recording sessions for the target to use as a
-           consistency signal.
-        5. Compute a ``PredictionResult`` via ``PredictionEngine``.
-        6. Determine the next check interval (jittered) and persist
-           the updated snapshot.
+        1. Load the target's ``MonitoringSnapshot`` (create a default if
+           none exists yet).
+        2. Count recording sessions for the target.
+        3. Compute a ``PredictionResult`` via ``PredictionEngine``.
+        4. Persist the updated snapshot with prediction data and a
+           jittered ``next_check_at``.
+        5. If a live check is due (``next_check_at`` was ``None`` or in
+           the past), enqueue the target to the ``QueuePlanner`` and
+           return ``True``.
+
+        Returns
+        -------
+        bool
+            ``True`` if the target was enqueued for a live check.
         """
         now = utc_now()
         snapshot = self._snapshot_repo.get(target.id)
@@ -231,35 +250,12 @@ class MonitoringCycle:
             or snapshot.next_check_at <= now
         )
 
-        if should_check:
-            self._live_check_service.check_stream(target.id)
-            # Re-read the snapshot — check_stream may have changed
-            # state, last_live_at, last_checked_at, etc.
-            snapshot = self._snapshot_repo.get(target.id)
-            # Guard: if the target was deleted between the check and
-            # the re-read, fall back to an empty snapshot.
-            if snapshot is None:
-                snapshot = MonitoringSnapshot(
-                    stream_target_id=target.id,
-                    state=MonitoringState.IDLE,
-                    queue_band=None,
-                    current_likelihood=0.0,
-                    current_confidence=Confidence.LOW,
-                    next_check_at=None,
-                    last_checked_at=None,
-                    last_live_at=None,
-                    current_recording_session_id=None,
-                    last_error_code=None,
-                    last_error_message=None,
-                    updated_at=now,
-                )
-
         # ── Gather prediction context ────────────────────────────
         sessions = self._session_repo.list_by_target(target.id)
         session_count = len(sessions)
         previous_priority = snapshot.current_likelihood
 
-        # ── Compute prediction ───────────────────────────────────
+        # ── Compute prediction (uses current snapshot) ───────────
         result = self._prediction_engine.predict(
             stream_target=target,
             snapshot=snapshot,
@@ -274,11 +270,13 @@ class MonitoringCycle:
         jittered = apply_jitter(interval)
         next_check_at = now + timedelta(seconds=jittered)
 
+        queue_band = get_queue_band(result.likelihood, target.favorite)
+
         # ── Persist updated snapshot ─────────────────────────────
         updated = MonitoringSnapshot(
             stream_target_id=snapshot.stream_target_id,
             state=snapshot.state,
-            queue_band=get_queue_band(result.likelihood, target.favorite),
+            queue_band=queue_band,
             current_likelihood=result.likelihood,
             current_confidence=result.confidence,
             next_check_at=next_check_at,
@@ -290,3 +288,14 @@ class MonitoringCycle:
             updated_at=now,
         )
         self._snapshot_repo.save(updated)
+
+        # ── Enqueue for async check if due ───────────────────────
+        if should_check:
+            self._queue_planner.enqueue(
+                target.id,
+                queue_band,
+                target.platform.value,
+            )
+            return True
+
+        return False

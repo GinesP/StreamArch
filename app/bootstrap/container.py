@@ -32,6 +32,9 @@ class Container:
     logger: object = None
     file_manager: object = None
     resolver_chain: object = None
+    platform_semaphores: object = None
+    queue_planner: object = None
+    worker_pool: object = None
 
     # ── Domain ────────────────────────────────────────────────────
     prediction_engine: object = None

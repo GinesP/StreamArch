@@ -21,6 +21,11 @@ def shutdown_application(container: Container, reason: str = "shutdown") -> None
         container.monitoring_cycle.stop()
         container.logger.info("Monitoring cycle stopped")
 
+    # ── Stop the worker pool (waits for in-flight checks) ─────────────
+    if container.worker_pool is not None:
+        container.worker_pool.stop()
+        container.logger.info("Worker pool stopped")
+
     # ── Stop the REST API server ────────────────────────────────────
     if container.api_server is not None:
         container.api_server.shutdown()
