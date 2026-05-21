@@ -17,6 +17,7 @@ from dataclasses import asdict
 from app.application.commands.add_stream import AddStreamCommand
 from app.application.commands.disable_monitoring import DisableMonitoringCommand
 from app.application.commands.enable_monitoring import EnableMonitoringCommand
+from app.application.commands.force_check import ForceCheckCommand
 from app.application.commands.mark_favorite import MarkFavoriteCommand
 from app.application.commands.unmark_favorite import UnmarkFavoriteCommand
 from app.application.commands.update_stream import UpdateStreamCommand
@@ -199,6 +200,31 @@ def handle_set_cookie(
     return {"status": "set", "platform": platform, "name": name}, 200
 
 
+# ── Force check ──────────────────────────────────────────────────────────
+
+
+def handle_force_check(
+    container: Container, params: dict, body: dict | None
+) -> tuple[dict, int]:
+    """POST /api/v1/streams/{stream_id}/force-check — trigger a live check.
+
+    The resolver chain is consulted immediately and the monitoring
+    snapshot is updated with the result.
+    """
+    stream_id = params.get("stream_id", "")
+    result = container.force_check_handler.handle(
+        ForceCheckCommand(stream_id=stream_id)
+    )
+    return {
+        "stream_id": stream_id,
+        "is_live": result.is_live,
+        "stream_url": result.stream_url,
+        "title": result.title,
+        "anchor_name": result.anchor_name,
+        "m3u8_url": result.m3u8_url,
+    }, 200
+
+
 # ── Helpers ────────────────────────────────────────────────────────────
 
 
@@ -223,6 +249,7 @@ def build_router() -> Router:
         PATCH  /api/v1/streams/{stream_id}
         POST   /api/v1/streams/{stream_id}/disable-monitoring
         POST   /api/v1/streams/{stream_id}/enable-monitoring
+        POST   /api/v1/streams/{stream_id}/force-check
         POST   /api/v1/streams/{stream_id}/favorite
         DELETE /api/v1/streams/{stream_id}/favorite
         GET    /api/v1/dashboard/state
@@ -243,6 +270,10 @@ def build_router() -> Router:
     router.add(
         "POST", "/api/v1/streams/{stream_id}/enable-monitoring",
         handle_enable_monitoring,
+    )
+    router.add(
+        "POST", "/api/v1/streams/{stream_id}/force-check",
+        handle_force_check,
     )
     router.add(
         "POST", "/api/v1/streams/{stream_id}/favorite",

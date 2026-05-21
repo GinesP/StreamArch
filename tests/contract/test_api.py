@@ -12,6 +12,7 @@ import socket
 import threading
 from http.client import HTTPConnection
 from http.server import HTTPServer
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -24,6 +25,7 @@ from app.application.commands.enable_monitoring import (
     EnableMonitoringCommand,
     EnableMonitoringHandler,
 )
+from app.application.commands.force_check import ForceCheckCommand, ForceCheckHandler
 from app.application.commands.mark_favorite import (
     MarkFavoriteCommand,
     MarkFavoriteHandler,
@@ -43,10 +45,13 @@ from app.application.queries.list_recordings import (
 )
 from app.application.queries.list_streams import ListStreamsHandler, ListStreamsQuery
 from app.application.services.cookie_service import CookieService
+from app.application.services.live_check_service import LiveCheckService
 from app.bootstrap.container import Container
 from app.infrastructure.cookies.cookie_storage import CookieStore
 from app.infrastructure.db.connection import get_connection
 from app.infrastructure.db.migrations import apply_migrations
+from app.infrastructure.resolvers.resolver_chain import ResolverChain
+from app.infrastructure.resolvers.result import ResolveResult
 from app.infrastructure.repositories.monitoring_snapshot_repository import (
     MonitoringSnapshotRepository,
 )
@@ -170,6 +175,21 @@ def container(db_path, tmp_path) -> Container:
     )
     c.list_recordings_handler = ListRecordingsHandler(
         recording_session_repo=c.recording_session_repo,
+    )
+
+    # ── Live-check (mocked chain, real repos) ─────────────────────
+    c.resolver_chain = ResolverChain([
+        MagicMock(resolve=MagicMock(return_value=ResolveResult(
+            is_live=False,
+        ))),
+    ])
+    c.live_check_service = LiveCheckService(
+        resolver_chain=c.resolver_chain,
+        stream_target_repo=c.stream_target_repo,
+        monitoring_snapshot_repo=c.monitoring_snapshot_repo,
+    )
+    c.force_check_handler = ForceCheckHandler(
+        live_check_service=c.live_check_service,
     )
     return c
 
@@ -402,6 +422,50 @@ class TestApiContract:
             conn, "POST", "/api/v1/streams/nonexistent/enable-monitoring"
         )
         assert status == 400
+        assert "not found" in data["error"]["message"]
+
+    # ── force-check ────────────────────────────────────────────────
+
+    def test_force_check_returns_result_for_existing_stream(
+        self, conn: HTTPConnection
+    ) -> None:
+        # Arrange — create a stream first
+        _, create_data = _json_request(
+            conn,
+            "POST",
+            "/api/v1/streams",
+            {
+                "platform": "tiktok",
+                "handle": "checktarget",
+                "source_url": "https://www.tiktok.com/@checktarget/live",
+                "display_name": "Check Target",
+            },
+        )
+        stream_id = create_data["id"]
+
+        # Act — force-check
+        status, data = _json_request(
+            conn, "POST", f"/api/v1/streams/{stream_id}/force-check"
+        )
+
+        # Assert — the mocked resolver returns is_live=False
+        assert status == 200
+        assert data["stream_id"] == stream_id
+        assert data["is_live"] is False
+        # Other fields may be None since the mock returns defaults
+        assert "stream_url" in data
+        assert "title" in data
+        assert "anchor_name" in data
+        assert "m3u8_url" in data
+
+    def test_force_check_404_on_missing_stream(
+        self, conn: HTTPConnection
+    ) -> None:
+        status, data = _json_request(
+            conn, "POST", "/api/v1/streams/nonexistent/force-check"
+        )
+        assert status == 400
+        assert data["error"]["code"] == "bad_request"
         assert "not found" in data["error"]["message"]
 
     # ── favorite / unfavorite ───────────────────────────────────────

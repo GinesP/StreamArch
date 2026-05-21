@@ -11,9 +11,11 @@ import threading
 from pathlib import Path
 
 from app.application.services.cookie_service import CookieService
+from app.application.services.live_check_service import LiveCheckService
 from app.application.commands.add_stream import AddStreamHandler
 from app.application.commands.disable_monitoring import DisableMonitoringHandler
 from app.application.commands.enable_monitoring import EnableMonitoringHandler
+from app.application.commands.force_check import ForceCheckHandler
 from app.application.commands.mark_favorite import MarkFavoriteHandler
 from app.application.commands.unmark_favorite import UnmarkFavoriteHandler
 from app.application.commands.update_stream import UpdateStreamHandler
@@ -25,6 +27,10 @@ from app.infrastructure.cookies.cookie_storage import CookieStore
 from app.infrastructure.db.connection import get_connection
 from app.infrastructure.db.migrations import apply_migrations
 from app.infrastructure.logging.setup import setup_logging
+from app.infrastructure.resolvers.resolver_chain import ResolverChain
+from app.infrastructure.resolvers.streamget_resolver import StreamGetResolver
+from app.infrastructure.resolvers.streamlink_resolver import StreamlinkResolver
+from app.infrastructure.resolvers.ytdlp_resolver import YtDlpResolver
 from app.infrastructure.repositories.monitoring_snapshot_repository import (
     MonitoringSnapshotRepository,
 )
@@ -81,6 +87,27 @@ def start_application(container: Container) -> None:
         store=CookieStore(base_dir=container.config.cookies_dir),
     )
 
+    # ── Resolvers & live-check service ───────────────────────────
+    streamget_resolver = StreamGetResolver(
+        cookie_service=container.cookie_service,
+    )
+    streamlink_resolver = StreamlinkResolver(
+        cookie_service=container.cookie_service,
+    )
+    ytdlp_resolver = YtDlpResolver(
+        cookie_service=container.cookie_service,
+    )
+
+    container.resolver_chain = ResolverChain(
+        [streamget_resolver, streamlink_resolver, ytdlp_resolver],
+    )
+
+    container.live_check_service = LiveCheckService(
+        resolver_chain=container.resolver_chain,
+        stream_target_repo=container.stream_target_repo,
+        monitoring_snapshot_repo=container.monitoring_snapshot_repo,
+    )
+
     # ── Application handlers ──────────────────────────────────────
     container.add_stream_handler = AddStreamHandler(
         stream_target_repo=container.stream_target_repo,
@@ -112,6 +139,9 @@ def start_application(container: Container) -> None:
     )
     container.list_recordings_handler = ListRecordingsHandler(
         recording_session_repo=container.recording_session_repo,
+    )
+    container.force_check_handler = ForceCheckHandler(
+        live_check_service=container.live_check_service,
     )
 
     # ── REST API server ──────────────────────────────────────────

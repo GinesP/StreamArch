@@ -25,11 +25,13 @@ class Container:
     recording_service: object = None
     health_service: object = None
     cookie_service: object = None
+    live_check_service: object = None
 
     # ── Infrastructure ────────────────────────────────────────────
     config: object = None
     logger: object = None
     file_manager: object = None
+    resolver_chain: object = None
 
     # ── Domain ────────────────────────────────────────────────────
     prediction_engine: object = None
@@ -50,6 +52,7 @@ class Container:
     enable_monitoring_handler: object = None
     mark_favorite_handler: object = None
     unmark_favorite_handler: object = None
+    force_check_handler: object = None
     list_streams_handler: object = None
     get_dashboard_state_handler: object = None
     list_recordings_handler: object = None
