@@ -16,6 +16,12 @@ def shutdown_application(container: Container, reason: str = "shutdown") -> None
     """
     container.logger.info("Shutting down StreamArch core (reason: %s)…", reason)
 
+    # ── Stop the monitoring cycle ────────────────────────────────────
+    if container.monitoring_cycle is not None:
+        container.monitoring_cycle.stop()
+        container.logger.info("Monitoring cycle stopped")
+
+    # ── Stop the REST API server ────────────────────────────────────
     if container.api_server is not None:
         container.api_server.shutdown()
         container.logger.info("REST API server stopped")

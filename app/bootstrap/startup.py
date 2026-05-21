@@ -10,6 +10,7 @@ long-lived database connection is held in the container.
 import threading
 from pathlib import Path
 
+from app.application.orchestrators.monitoring_cycle import MonitoringCycle
 from app.application.services.cookie_service import CookieService
 from app.application.services.live_check_service import LiveCheckService
 from app.application.commands.add_stream import AddStreamHandler
@@ -27,6 +28,7 @@ from app.infrastructure.cookies.cookie_storage import CookieStore
 from app.infrastructure.db.connection import get_connection
 from app.infrastructure.db.migrations import apply_migrations
 from app.infrastructure.logging.setup import setup_logging
+from app.domain.prediction.engine import PredictionEngine
 from app.infrastructure.resolvers.resolver_chain import ResolverChain
 from app.infrastructure.resolvers.streamget_resolver import StreamGetResolver
 from app.infrastructure.resolvers.streamlink_resolver import StreamlinkResolver
@@ -107,6 +109,19 @@ def start_application(container: Container) -> None:
         stream_target_repo=container.stream_target_repo,
         monitoring_snapshot_repo=container.monitoring_snapshot_repo,
     )
+
+    # ── Prediction engine & monitoring cycle ──────────────────────
+    container.prediction_engine = PredictionEngine()
+
+    container.monitoring_cycle = MonitoringCycle(
+        prediction_engine=container.prediction_engine,
+        live_check_service=container.live_check_service,
+        stream_target_repo=container.stream_target_repo,
+        monitoring_snapshot_repo=container.monitoring_snapshot_repo,
+        recording_session_repo=container.recording_session_repo,
+        logger=container.logger,
+    )
+    container.monitoring_cycle.start()
 
     # ── Application handlers ──────────────────────────────────────
     container.add_stream_handler = AddStreamHandler(
