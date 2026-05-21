@@ -11,6 +11,7 @@ Each handler function receives::
 And returns ``(json_data, http_status)``.
 """
 
+import os
 from dataclasses import asdict
 
 from app.application.commands.add_stream import AddStreamCommand
@@ -142,6 +143,62 @@ def handle_list_recordings(
     return {"items": [asdict(d) for d in dtos]}, 200
 
 
+# ── Cookie handlers ─────────────────────────────────────────────────────
+
+
+def handle_list_cookie_platforms(
+    container: Container, params: dict, body: dict | None
+) -> tuple[dict, int]:
+    """GET /api/v1/cookies — list platforms with stored cookies."""
+    platforms = container.cookie_service.list_platforms()
+    return {"platforms": platforms}, 200
+
+
+def handle_get_cookie_platform(
+    container: Container, params: dict, body: dict | None
+) -> tuple[dict, int]:
+    """GET /api/v1/cookies/{platform} — get cookie status for a platform."""
+    platform = params["platform"]
+    cookie_string = container.cookie_service.get_cookie_string(platform)
+    return {
+        "platform": platform,
+        "cookie_string": cookie_string,
+        "has_cookies": bool(cookie_string),
+    }, 200
+
+
+def handle_import_cookies(
+    container: Container, params: dict, body: dict | None
+) -> tuple[dict, int]:
+    """POST /api/v1/cookies/import — import cookies from a JSON file path."""
+    if body is None:
+        raise ValueError("Request body is required and must be valid JSON")
+
+    platform = _require(body, "platform")
+    file_path = _require(body, "file_path")
+
+    if not os.path.isfile(file_path):
+        raise ValueError(f"File not found: {file_path}")
+
+    count = container.cookie_service.import_cookies(platform, file_path)
+    return {"status": "imported", "platform": platform, "count": count}, 200
+
+
+def handle_set_cookie(
+    container: Container, params: dict, body: dict | None
+) -> tuple[dict, int]:
+    """POST /api/v1/cookies/{platform} — set or update a single cookie."""
+    if body is None:
+        raise ValueError("Request body is required and must be valid JSON")
+
+    platform = params["platform"]
+    name = _require(body, "name")
+    value = _require(body, "value")
+
+    container.cookie_service.set_cookie(platform, name, value)
+    return {"status": "set", "platform": platform, "name": name}, 200
+
+
 # ── Helpers ────────────────────────────────────────────────────────────
 
 
@@ -170,6 +227,10 @@ def build_router() -> Router:
         DELETE /api/v1/streams/{stream_id}/favorite
         GET    /api/v1/dashboard/state
         GET    /api/v1/recordings
+        GET    /api/v1/cookies
+        POST   /api/v1/cookies/import
+        GET    /api/v1/cookies/{platform}
+        POST   /api/v1/cookies/{platform}
     """
     router = Router()
     router.add("GET", "/api/v1/streams", handle_list_streams)
@@ -193,4 +254,9 @@ def build_router() -> Router:
     )
     router.add("GET", "/api/v1/dashboard/state", handle_dashboard_state)
     router.add("GET", "/api/v1/recordings", handle_list_recordings)
+    # ── Cookie routes (import first so it's matched before {platform}) ──
+    router.add("GET", "/api/v1/cookies", handle_list_cookie_platforms)
+    router.add("POST", "/api/v1/cookies/import", handle_import_cookies)
+    router.add("GET", "/api/v1/cookies/{platform}", handle_get_cookie_platform)
+    router.add("POST", "/api/v1/cookies/{platform}", handle_set_cookie)
     return router

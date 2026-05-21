@@ -42,7 +42,9 @@ from app.application.queries.list_recordings import (
     ListRecordingsQuery,
 )
 from app.application.queries.list_streams import ListStreamsHandler, ListStreamsQuery
+from app.application.services.cookie_service import CookieService
 from app.bootstrap.container import Container
+from app.infrastructure.cookies.cookie_storage import CookieStore
 from app.infrastructure.db.connection import get_connection
 from app.infrastructure.db.migrations import apply_migrations
 from app.infrastructure.repositories.monitoring_snapshot_repository import (
@@ -56,6 +58,36 @@ from app.infrastructure.repositories.stream_target_repository import (
 )
 from app.interfaces.api.routes import build_router
 from app.interfaces.api.server import APIHandler, create_server
+
+# ── Sample data ─────────────────────────────────────────────────────────
+
+SAMPLE_PUPPETEER_JSON = [
+    {
+        "name": "sessionid",
+        "value": "abc123",
+        "domain": ".twitch.tv",
+        "path": "/",
+        "httpOnly": True,
+        "secure": True,
+    },
+    {
+        "name": "persistent",
+        "value": "xyz789",
+        "domain": ".twitch.tv",
+        "path": "/",
+        "httpOnly": True,
+        "secure": True,
+    },
+    {
+        "name": "login_token",
+        "value": "tok_42",
+        "domain": "twitch.tv",
+        "path": "/",
+        "httpOnly": False,
+        "secure": False,
+    },
+]
+
 
 # ── Helpers ────────────────────────────────────────────────────────────
 
@@ -98,11 +130,15 @@ def db_path(tmp_path) -> str:
 
 
 @pytest.fixture
-def container(db_path) -> Container:
+def container(db_path, tmp_path) -> Container:
     c = Container()
     c.stream_target_repo = StreamTargetRepository(db_path)
     c.monitoring_snapshot_repo = MonitoringSnapshotRepository(db_path)
     c.recording_session_repo = RecordingSessionRepository(db_path)
+
+    c.cookie_service = CookieService(
+        store=CookieStore(base_dir=str(tmp_path / "cookies")),
+    )
 
     c.add_stream_handler = AddStreamHandler(
         stream_target_repo=c.stream_target_repo,
@@ -575,3 +611,150 @@ class TestApiContract:
         assert item["error_code"] is None
         assert item["error_message"] is None
         assert item["split_reason"] is None
+
+    # ── Cookies ────────────────────────────────────────────────────
+
+    def test_list_cookies_empty(self, conn: HTTPConnection) -> None:
+        status, data = _json_request(conn, "GET", "/api/v1/cookies")
+        assert status == 200
+        assert data == {"platforms": []}
+
+    def test_get_cookie_platform_empty(self, conn: HTTPConnection) -> None:
+        status, data = _json_request(
+            conn, "GET", "/api/v1/cookies/nonexistent"
+        )
+        assert status == 200
+        assert data == {
+            "platform": "nonexistent",
+            "cookie_string": "",
+            "has_cookies": False,
+        }
+
+    def test_import_and_list_cookies(
+        self, conn: HTTPConnection, tmp_path
+    ) -> None:
+        # Arrange — write a Puppeteer-style JSON export file
+        cookie_file = tmp_path / "export.json"
+        cookie_file.write_text(json.dumps(SAMPLE_PUPPETEER_JSON))
+
+        # Act — import
+        status, data = _json_request(
+            conn,
+            "POST",
+            "/api/v1/cookies/import",
+            {"platform": "twitch", "file_path": str(cookie_file)},
+        )
+        assert status == 200
+        assert data == {
+            "status": "imported",
+            "platform": "twitch",
+            "count": 3,
+        }
+
+        # Assert — list now includes twitch
+        status, data = _json_request(conn, "GET", "/api/v1/cookies")
+        assert data == {"platforms": ["twitch"]}
+
+    def test_get_cookie_platform_after_import(
+        self, conn: HTTPConnection, tmp_path
+    ) -> None:
+        # Arrange — seed cookies via import
+        cookie_file = tmp_path / "export.json"
+        cookie_file.write_text(json.dumps(SAMPLE_PUPPETEER_JSON))
+        _json_request(
+            conn,
+            "POST",
+            "/api/v1/cookies/import",
+            {"platform": "twitch", "file_path": str(cookie_file)},
+        )
+
+        # Act — get platform
+        status, data = _json_request(
+            conn, "GET", "/api/v1/cookies/twitch"
+        )
+        assert status == 200
+        assert data["platform"] == "twitch"
+        assert data["has_cookies"] is True
+        assert "sessionid=abc123" in data["cookie_string"]
+        assert "persistent=xyz789" in data["cookie_string"]
+
+    def test_set_cookie_via_api(self, conn: HTTPConnection) -> None:
+        # Act — set a single cookie
+        status, data = _json_request(
+            conn,
+            "POST",
+            "/api/v1/cookies/youtube",
+            {"name": "SESSION", "value": "xyz789"},
+        )
+        assert status == 200
+        assert data == {
+            "status": "set",
+            "platform": "youtube",
+            "name": "SESSION",
+        }
+
+        # Assert — read it back
+        status, data = _json_request(
+            conn, "GET", "/api/v1/cookies/youtube"
+        )
+        assert data["cookie_string"] == "SESSION=xyz789"
+        assert data["has_cookies"] is True
+
+    def test_set_cookie_updates_existing(
+        self, conn: HTTPConnection
+    ) -> None:
+        # Set initial value
+        _json_request(
+            conn,
+            "POST",
+            "/api/v1/cookies/twitch",
+            {"name": "session", "value": "first"},
+        )
+        # Update it
+        status, data = _json_request(
+            conn,
+            "POST",
+            "/api/v1/cookies/twitch",
+            {"name": "session", "value": "updated"},
+        )
+        assert status == 200
+
+        # Verify update
+        _, data = _json_request(conn, "GET", "/api/v1/cookies/twitch")
+        assert data["cookie_string"] == "session=updated"
+
+    def test_import_nonexistent_file_returns_400(
+        self, conn: HTTPConnection
+    ) -> None:
+        status, data = _json_request(
+            conn,
+            "POST",
+            "/api/v1/cookies/import",
+            {"platform": "twitch", "file_path": "/nonexistent/file.json"},
+        )
+        assert status == 400
+        assert data["error"]["code"] == "bad_request"
+
+    def test_import_missing_fields_returns_400(
+        self, conn: HTTPConnection
+    ) -> None:
+        status, data = _json_request(
+            conn,
+            "POST",
+            "/api/v1/cookies/import",
+            {"platform": "twitch"},  # missing file_path
+        )
+        assert status == 400
+        assert data["error"]["code"] == "bad_request"
+
+    def test_set_cookie_missing_fields_returns_400(
+        self, conn: HTTPConnection
+    ) -> None:
+        status, data = _json_request(
+            conn,
+            "POST",
+            "/api/v1/cookies/twitch",
+            {"name": "only_name"},  # missing value
+        )
+        assert status == 400
+        assert data["error"]["code"] == "bad_request"

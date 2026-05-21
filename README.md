@@ -39,7 +39,16 @@ framework required):
 | `GET` | `/api/v1/streams` | List all streams with current monitoring state |
 | `POST` | `/api/v1/streams` | Create a new stream target |
 | `PATCH` | `/api/v1/streams/{stream_id}` | Update stream target fields |
+| `POST` | `/api/v1/streams/{stream_id}/disable-monitoring` | Stop monitoring a stream |
+| `POST` | `/api/v1/streams/{stream_id}/enable-monitoring` | Start monitoring a stream |
+| `POST` | `/api/v1/streams/{stream_id}/favorite` | Mark stream as favourite |
+| `DELETE` | `/api/v1/streams/{stream_id}/favorite` | Unmark stream as favourite |
 | `GET` | `/api/v1/dashboard/state` | Aggregate dashboard state |
+| `GET` | `/api/v1/recordings` | List recording sessions |
+| `GET` | `/api/v1/cookies` | List platforms with stored cookies |
+| `GET` | `/api/v1/cookies/{platform}` | Get cookie string and status for a platform |
+| `POST` | `/api/v1/cookies/import` | Import cookies from a Puppeteer-style JSON file path |
+| `POST` | `/api/v1/cookies/{platform}` | Set or update a single cookie for a platform |
 
 The server listens on `127.0.0.1:8899` by default (configurable via
 `api_host` / `api_port` in the JSON config or `config.example.json`).

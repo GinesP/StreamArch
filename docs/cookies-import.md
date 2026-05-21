@@ -104,7 +104,9 @@ bootstrap/startup.py                       ← CookieStore initialized from conf
 - The store lives in infrastructure because it manages file I/O.
 - The service lives in application because it provides the use-case-level
   API to handlers and resolvers.
-- No UI, no REST endpoints, no platform-specific resolver integration yet.
+- REST endpoints expose cookie operations to external consumers (see
+  `app/interfaces/api/routes.py` — the ``/api/v1/cookies/*`` routes).
+- No UI and no platform-specific resolver integration yet.
 
 ## Security notes
 
