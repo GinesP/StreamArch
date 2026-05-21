@@ -72,6 +72,7 @@ All architecture decisions are documented in `docs/`:
 - [`docs/architecture-initial-scheduler.md`](docs/architecture-initial-scheduler.md) — Scheduler and prediction engine design
 - [`docs/streamcaporigin-preserve-refactor-drop.md`](docs/streamcaporigin-preserve-refactor-drop.md) — Migration decisions from StreamCapOrigin
 - [`docs/cookies-import.md`](docs/cookies-import.md) — Cookie export/import guidance and operational notes
+- [`docs/api-reference.md`](docs/api-reference.md) — Reference for the currently implemented REST endpoints
 
 ## Layers
 

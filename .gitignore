@@ -3,6 +3,7 @@
 data/
 cookies.json
 config/cookies.json
+*.cookies.json
 
 # Python
 __pycache__/
