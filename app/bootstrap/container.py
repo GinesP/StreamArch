@@ -24,6 +24,7 @@ class Container:
     prediction_service: object = None
     recording_service: object = None
     health_service: object = None
+    cookie_service: object = None
 
     # ── Infrastructure ────────────────────────────────────────────
     config: object = None

@@ -103,13 +103,27 @@ python -m app.main --config config.example.json
 
 Some platforms may require valid cookies for reliable stream resolution.
 
-The plan for StreamArch is to reuse the cookie system from StreamCapQT/StreamCapOrigin because it already works well in production.
+The project reuses the cookie approach proven in StreamCapQT/StreamCapOrigin:
+platform-keyed storage, JSON import from browser exports, atomic persistence,
+and a framework-agnostic access layer.
+
+**Cookie storage path**: `data/cookies/{platform}.json` (configurable via
+`cookies_dir` in the JSON config).
+
+**Currently implemented** — a minimal, stdlib-only cookie subsystem:
+
+| Operation | Description |
+|-----------|-------------|
+| `import_cookies` | Import a Puppeteer-style JSON export for a platform |
+| `set_cookie` | Set or update a single cookie for a platform |
+| `get_cookie_string` | Get `name=value; ...` string for a platform |
+| `list_platforms` | List platforms that have stored cookies |
+
+See the detailed guide in:
+
+- [`docs/cookies-import.md`](docs/cookies-import.md)
 
 Recommended browser extension for exporting compatible cookies:
 
 - **Export cookie JSON file for Puppeteer**
 - https://chromewebstore.google.com/detail/export-cookie-json-file-for-puppeteer/nmckokihipjgplolmcmjakknndddifde?hl=es&utm_source=ext_sidebar
-
-See the detailed guide in:
-
-- [`docs/cookies-import.md`](docs/cookies-import.md)

@@ -10,6 +10,7 @@ long-lived database connection is held in the container.
 import threading
 from pathlib import Path
 
+from app.application.services.cookie_service import CookieService
 from app.application.commands.add_stream import AddStreamHandler
 from app.application.commands.disable_monitoring import DisableMonitoringHandler
 from app.application.commands.enable_monitoring import EnableMonitoringHandler
@@ -20,6 +21,7 @@ from app.application.queries.list_recordings import ListRecordingsHandler
 from app.application.queries.list_streams import ListStreamsHandler
 from app.application.queries.get_dashboard_state import GetDashboardStateHandler
 from app.infrastructure.config.loader import AppConfig, load_config
+from app.infrastructure.cookies.cookie_storage import CookieStore
 from app.infrastructure.db.connection import get_connection
 from app.infrastructure.db.migrations import apply_migrations
 from app.infrastructure.logging.setup import setup_logging
@@ -73,6 +75,11 @@ def start_application(container: Container) -> None:
     container.stream_target_repo = StreamTargetRepository(str(db_path))
     container.monitoring_snapshot_repo = MonitoringSnapshotRepository(str(db_path))
     container.recording_session_repo = RecordingSessionRepository(str(db_path))
+
+    # ── Cookie service ───────────────────────────────────────────
+    container.cookie_service = CookieService(
+        store=CookieStore(base_dir=container.config.cookies_dir),
+    )
 
     # ── Application handlers ──────────────────────────────────────
     container.add_stream_handler = AddStreamHandler(
