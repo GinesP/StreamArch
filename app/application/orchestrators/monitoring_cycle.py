@@ -20,6 +20,7 @@ import logging
 import threading
 from datetime import datetime, timedelta
 
+from app.application.services.recording_service import RecordingService
 from app.domain.monitoring.snapshot import MonitoringSnapshot
 from app.domain.monitoring.states import MonitoringState
 from app.domain.prediction.engine import PredictionEngine
@@ -89,6 +90,7 @@ class MonitoringCycle:
         period_days: float = 30.0,
         event_bus: EventBus | None = None,
         worker_pool: WorkerPool | None = None,
+        recording_service: RecordingService | None = None,
     ) -> None:
         self._prediction_engine = prediction_engine
         self._target_repo = stream_target_repo
@@ -100,6 +102,7 @@ class MonitoringCycle:
         self._period_days = period_days
         self._event_bus = event_bus
         self._worker_pool = worker_pool
+        self._recording_service = recording_service
 
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
@@ -234,18 +237,34 @@ class MonitoringCycle:
                             },
                         )
 
+                    # ── Live transition: start recording ──────────────
                     if old_was_live is not None and snapshot.is_live and not old_was_live:
-                        self._event_bus.publish(
-                            "recording.started",
-                            {
-                                "stream_id": target.id,
-                                "recording_id": (
-                                    snapshot.current_recording_session_id or ""
-                                ),
-                                "started_at": utc_now().isoformat(),
-                                "artifact_path": "",
-                            },
-                        )
+                        if self._recording_service is not None and snapshot.resolved_stream_url:
+                            try:
+                                self._recording_service.start_recording(
+                                    stream_target_id=target.id,
+                                    stream_url=snapshot.resolved_stream_url,
+                                )
+                            except Exception:
+                                self._logger.exception(
+                                    "Failed to start recording for %s (%s)",
+                                    target.id,
+                                    target.handle,
+                                )
+
+                    # ── Offline transition: stop recording ───────────
+                    if old_was_live is not None and not snapshot.is_live and old_was_live:
+                        if self._recording_service is not None and snapshot.current_recording_session_id:
+                            try:
+                                self._recording_service.stop_recording(
+                                    recording_session_id=snapshot.current_recording_session_id,
+                                )
+                            except Exception:
+                                self._logger.exception(
+                                    "Failed to stop recording for %s (%s)",
+                                    target.id,
+                                    target.handle,
+                                )
 
                 # Update cache for next cycle
                 self._last_known_state[target.id] = snapshot.state

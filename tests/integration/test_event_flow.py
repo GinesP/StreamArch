@@ -229,9 +229,14 @@ class TestMonitoringCycleEvents:
         assert payload["state"] == "recording"
         assert payload["queue_band"] == "fast"
 
-    def test_emits_recording_started_when_becoming_live(self) -> None:
-        """When a target transitions to RECORDING state, recording.started is
-        emitted."""
+    def test_emits_status_changed_on_live_transition(self) -> None:
+        """When the monitoring cycle detects a live stream (transition from
+        not-live to live), it emits ``stream.status_changed``.
+
+        Note: ``recording.started`` is now emitted by the ``RecordingService``,
+        not by the monitoring cycle — this test only verifies the
+        ``stream.status_changed`` event that the cycle still owns.
+        """
         event_bus = EventBus()
         status_events: list[dict] = []
         recording_events: list[dict] = []
@@ -298,9 +303,8 @@ class TestMonitoringCycleEvents:
             cycle._run_one_cycle()
 
         assert len(status_events) == 1
-        assert len(recording_events) == 1
-        assert recording_events[0]["stream_id"] == "t1"
-        assert recording_events[0]["recording_id"] == "rec_1"
+        # recording.started is now emitted by RecordingService, not the cycle
+        assert len(recording_events) == 0
 
     def test_emits_queue_health_every_cycle(self) -> None:
         """queue.health_updated is emitted every cycle, regardless of state

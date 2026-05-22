@@ -18,6 +18,7 @@ class Container:
     stream_target_repo: object = None
     monitoring_snapshot_repo: object = None
     recording_session_repo: object = None
+    recording_artifact_repo: object = None
     metrics_bucket_repo: object = None
 
     # ── Services ──────────────────────────────────────────────────
@@ -31,6 +32,7 @@ class Container:
     config: object = None
     logger: object = None
     file_manager: object = None
+    ffmpeg_runner: object = None
     resolver_chain: object = None
     platform_semaphores: object = None
     queue_planner: object = None

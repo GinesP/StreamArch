@@ -21,6 +21,11 @@ def shutdown_application(container: Container, reason: str = "shutdown") -> None
         container.monitoring_cycle.stop()
         container.logger.info("Monitoring cycle stopped")
 
+    # ── Stop all active recordings ────────────────────────────────────
+    if container.ffmpeg_runner is not None:
+        container.ffmpeg_runner.stop_all()
+        container.logger.info("FFmpeg runner stopped")
+
     # ── Stop the worker pool (waits for in-flight checks) ─────────────
     if container.worker_pool is not None:
         container.worker_pool.stop()

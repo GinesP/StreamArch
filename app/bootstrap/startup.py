@@ -13,6 +13,7 @@ from pathlib import Path
 from app.application.orchestrators.monitoring_cycle import MonitoringCycle
 from app.application.services.cookie_service import CookieService
 from app.application.services.live_check_service import LiveCheckService
+from app.application.services.recording_service import RecordingService
 from app.application.commands.add_stream import AddStreamHandler
 from app.application.commands.disable_monitoring import DisableMonitoringHandler
 from app.application.commands.enable_monitoring import EnableMonitoringHandler
@@ -46,6 +47,11 @@ from app.infrastructure.scheduler.platform_semaphores import PlatformSemaphores
 from app.infrastructure.scheduler.queue_planner import QueuePlanner
 from app.infrastructure.scheduler.worker_pool import WorkerPool
 from app.infrastructure.events.event_bus import EventBus
+from app.infrastructure.ffmpeg.process_runner import FFmpegRunner
+from app.infrastructure.files.file_manager import FileManager
+from app.infrastructure.repositories.recording_artifact_repository import (
+    RecordingArtifactRepository,
+)
 from app.interfaces.api.routes import build_router
 from app.interfaces.api.server import create_server
 from app.interfaces.websocket.server import WebSocketServer
@@ -88,6 +94,16 @@ def start_application(container: Container) -> None:
     container.stream_target_repo = StreamTargetRepository(str(db_path))
     container.monitoring_snapshot_repo = MonitoringSnapshotRepository(str(db_path))
     container.recording_session_repo = RecordingSessionRepository(str(db_path))
+    container.recording_artifact_repo = RecordingArtifactRepository(str(db_path))
+
+    # ── File manager ─────────────────────────────────────────────
+    container.file_manager = FileManager(
+        base_path=Path(container.config.recordings_dir),
+    )
+    container.file_manager.ensure_directory()
+
+    # ── FFmpeg runner ────────────────────────────────────────────
+    container.ffmpeg_runner = FFmpegRunner()
 
     # ── Cookie service ───────────────────────────────────────────
     container.cookie_service = CookieService(
@@ -131,6 +147,17 @@ def start_application(container: Container) -> None:
     )
     container.worker_pool.start()
 
+    # ── Recording service ────────────────────────────────────────
+    container.recording_service = RecordingService(
+        runner=container.ffmpeg_runner,
+        file_manager=container.file_manager,
+        session_repo=container.recording_session_repo,
+        artifact_repo=container.recording_artifact_repo,
+        target_repo=container.stream_target_repo,
+        snapshot_repo=container.monitoring_snapshot_repo,
+        event_bus=container.event_bus,
+    )
+
     container.monitoring_cycle = MonitoringCycle(
         prediction_engine=container.prediction_engine,
         stream_target_repo=container.stream_target_repo,
@@ -140,6 +167,7 @@ def start_application(container: Container) -> None:
         logger=container.logger,
         event_bus=container.event_bus,
         worker_pool=container.worker_pool,
+        recording_service=container.recording_service,
     )
     container.monitoring_cycle.start()
 
