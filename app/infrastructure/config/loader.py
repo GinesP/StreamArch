@@ -50,8 +50,17 @@ class AppConfig:
     # ── Cookies ─────────────────────────────────────────────────
     cookies_dir: str = field(default="./data/cookies")
 
+    # ── Recording ─────────────────────────────────────────────────
+    recording_segment_enabled: bool = field(default=False)
+    recording_segment_time_seconds: int = field(default=3600)
+    recording_per_stream_directory: bool = field(default=True)
+    recording_convert_to_mp4: bool = field(default=True)
+
     # ── Database ─────────────────────────────────────────────────
     db_pool_size: int = field(default=1)
+
+    # ── Config example (unused internally, kept for discovery) ──
+    recordings_dir: str = field(default="./data/recordings")
 
 
 def load_config(config_path: Optional[str] = None) -> AppConfig:

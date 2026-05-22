@@ -1,1 +1,1 @@
-# Recording — session lifecycle and artifact management.
+# Recording — session lifecycle, artifact management, and config.

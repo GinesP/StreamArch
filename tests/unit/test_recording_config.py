@@ -1,0 +1,251 @@
+"""Tests for RecordingConfig resolution and file-name generation.
+
+Covers:
+* :class:`RecordingConfig` internal defaults.
+* :func:`resolve_recording_config` with and without a global config.
+* :meth:`FileManager.allocate_path` filename pattern, sanitisation,
+  per-stream directory behaviour, and title inclusion/omission.
+"""
+
+from pathlib import Path
+from unittest.mock import patch
+
+import pytest
+
+from app.domain.recording.config import RecordingConfig, resolve_recording_config
+from app.infrastructure.files.file_manager import FileManager, _sanitise_filename
+
+
+# ======================================================================
+# RecordingConfig — defaults and resolution
+# ======================================================================
+
+
+class TestRecordingConfigDefaults:
+    """RecordingConfig internal defaults."""
+
+    def test_default_segment_disabled(self) -> None:
+        config = RecordingConfig()
+        assert config.segment_enabled is False
+
+    def test_default_segment_time(self) -> None:
+        config = RecordingConfig()
+        assert config.segment_time_seconds == 3600
+
+    def test_default_per_stream_directory(self) -> None:
+        config = RecordingConfig()
+        assert config.per_stream_directory is True
+
+    def test_default_convert_to_mp4(self) -> None:
+        config = RecordingConfig()
+        assert config.convert_to_mp4 is True
+
+
+class TestResolveRecordingConfig:
+    """resolve_recording_config — global vs internal defaults."""
+
+    def test_none_returns_internal_defaults(self) -> None:
+        config = resolve_recording_config(global_config=None)
+        assert config.segment_enabled is False
+        assert config.segment_time_seconds == 3600
+        assert config.per_stream_directory is True
+        assert config.convert_to_mp4 is True
+
+    def test_global_config_is_preserved(self) -> None:
+        global_config = RecordingConfig(
+            segment_enabled=True,
+            segment_time_seconds=1800,
+            per_stream_directory=False,
+            convert_to_mp4=False,
+        )
+        config = resolve_recording_config(global_config=global_config)
+        assert config.segment_enabled is True
+        assert config.segment_time_seconds == 1800
+        assert config.per_stream_directory is False
+        assert config.convert_to_mp4 is False
+
+    def test_partial_global_config(self) -> None:
+        """Only the fields set on the global config are picked up."""
+        global_config = RecordingConfig(per_stream_directory=False)
+        config = resolve_recording_config(global_config=global_config)
+        assert config.per_stream_directory is False
+        # Everything else falls through to internal defaults.
+        assert config.segment_enabled is False
+        assert config.segment_time_seconds == 3600
+        assert config.convert_to_mp4 is True
+
+
+# ======================================================================
+# _sanitise_filename — filesystem-safe name segments
+# ======================================================================
+
+
+class TestSanitiseFilename:
+    """_sanitise_filename — strips unsafe chars and normalises whitespace."""
+
+    def test_passes_through_clean_name(self) -> None:
+        assert _sanitise_filename("allieostudio") == "allieostudio"
+
+    def test_replaces_spaces_with_underscores(self) -> None:
+        assert _sanitise_filename("Love Club") == "Love_Club"
+
+    def test_collapses_multiple_spaces(self) -> None:
+        assert _sanitise_filename("Love   Club 2024") == "Love_Club_2024"
+
+    def test_strips_windows_invalid_chars(self) -> None:
+        """Characters like < > : " / \\ | ? * are silently removed."""
+        result = _sanitise_filename('foo<bar>:baz"qux')
+        assert "<" not in result
+        assert ">" not in result
+        assert ":" not in result
+        assert '"' not in result
+        # No spaces to convert — invalid chars are stripped without substitution.
+        assert result == "foobarbazqux"
+
+    def test_strips_control_chars(self) -> None:
+        """Control characters are removed without substitution."""
+        result = _sanitise_filename("abc\x00def\x1fghi")
+        assert result == "abcdefghi"
+
+    def test_strips_leading_trailing_junk(self) -> None:
+        result = _sanitise_filename("  __--hello__..  ")
+        assert result == "hello"
+
+    def test_handle_with_hyphen(self) -> None:
+        """Hyphens are preserved (common in channel names)."""
+        assert _sanitise_filename("allie-allieostudio") == "allie-allieostudio"
+
+
+# ======================================================================
+# FileManager.allocate_path — filename pattern
+# ======================================================================
+
+
+class TestFileManagerAllocatePath:
+    """FileManager.allocate_path — naming scheme, per-stream dir, title."""
+
+    FAKE_NOW = "2026-05-22 23:12:56"
+
+    @pytest.fixture
+    def fm(self, tmp_path: Path) -> FileManager:
+        return FileManager(base_path=tmp_path, per_stream_directory=True)
+
+    @pytest.fixture
+    def fm_flat(self, tmp_path: Path) -> FileManager:
+        return FileManager(base_path=tmp_path, per_stream_directory=False)
+
+    # ── Pattern: handle + date + time → .ts ─────────────────────
+
+    def test_minimal_pattern(self, fm: FileManager, tmp_path: Path) -> None:
+        """handle + date + time with no title."""
+        with patch("app.infrastructure.files.file_manager.datetime") as mock_dt:
+            mock_dt.now.return_value.strftime.return_value = "2026-05-22"
+            # We need two calls — one for date_part, one for time_part
+            mock_dt.now.return_value.strftime.side_effect = ["2026-05-22", "23-12-56"]
+
+            path = fm.allocate_path(handle="streamer", extension="ts")
+
+        assert path.name == "streamer_2026-05-22_23-12-56.ts"
+        assert path.parent.name == "streamer"
+        assert path.parent.parent == tmp_path
+
+    def test_pattern_with_title(self, fm: FileManager, tmp_path: Path) -> None:
+        """Title is inserted as the second segment."""
+        with patch("app.infrastructure.files.file_manager.datetime") as mock_dt:
+            mock_dt.now.return_value.strftime.side_effect = ["2026-05-22", "23-12-56"]
+
+            path = fm.allocate_path(
+                handle="allie-allieostudio",
+                extension="ts",
+                stream_title="Love Club",
+            )
+
+        assert path.name == "allie-allieostudio_Love_Club_2026-05-22_23-12-56.ts"
+
+    def test_title_sanitised(self, fm: FileManager, tmp_path: Path) -> None:
+        """Title is sanitised — unsafe chars removed, spaces → underscores."""
+        with patch("app.infrastructure.files.file_manager.datetime") as mock_dt:
+            mock_dt.now.return_value.strftime.side_effect = ["2026-05-22", "23-12-56"]
+
+            path = fm.allocate_path(
+                handle="chan",
+                extension="ts",
+                stream_title='LATE NIGHT <show> / 2024',
+            )
+
+        # / is stripped, < > are stripped, spaces become underscores
+        assert path.name == "chan_LATE_NIGHT_show_2024_2026-05-22_23-12-56.ts"
+
+    def test_empty_title_omitted(self, fm: FileManager, tmp_path: Path) -> None:
+        """Empty or whitespace-only title is treated as absent."""
+        with patch("app.infrastructure.files.file_manager.datetime") as mock_dt:
+            mock_dt.now.return_value.strftime.side_effect = ["2026-05-22", "23-12-56"]
+
+            path = fm.allocate_path(
+                handle="chan",
+                extension="ts",
+                stream_title="   ",
+            )
+
+        assert "   " not in path.name
+        # Should be chan_2026-05-22_23-12-56.ts (no title segment)
+        parts = path.stem.split("_")
+        assert len(parts) == 3  # chan, date, time
+        assert parts[0] == "chan"
+
+    def test_mp4_extension(self, fm: FileManager, tmp_path: Path) -> None:
+        """Works with .mp4 extension too."""
+        with patch("app.infrastructure.files.file_manager.datetime") as mock_dt:
+            mock_dt.now.return_value.strftime.side_effect = ["2026-05-22", "23-12-56"]
+
+            path = fm.allocate_path(handle="streamer", extension="mp4")
+
+        assert path.suffix == ".mp4"
+        assert path.name.endswith(".mp4")
+
+    # ── Per-stream directory ─────────────────────────────────────
+
+    def test_per_stream_directory_default(self, fm: FileManager, tmp_path: Path) -> None:
+        """When per_stream_directory is True, file goes under handle directory."""
+        with patch("app.infrastructure.files.file_manager.datetime") as mock_dt:
+            mock_dt.now.return_value.strftime.side_effect = ["2026-05-22", "23-12-56"]
+
+            path = fm.allocate_path(handle="streamer", extension="ts")
+
+        assert path.parent.name == "streamer"
+
+    def test_flat_directory(self, fm_flat: FileManager, tmp_path: Path) -> None:
+        """When per_stream_directory is False, file goes directly in base."""
+        with patch("app.infrastructure.files.file_manager.datetime") as mock_dt:
+            mock_dt.now.return_value.strftime.side_effect = ["2026-05-22", "23-12-56"]
+
+            path = fm_flat.allocate_path(handle="streamer", extension="ts")
+
+        assert path.parent == tmp_path
+        assert path.parent.name != "streamer"
+
+    def test_per_stream_directory_override(self, fm: FileManager, tmp_path: Path) -> None:
+        """Call-site per_stream_directory overrides instance default."""
+        with patch("app.infrastructure.files.file_manager.datetime") as mock_dt:
+            mock_dt.now.return_value.strftime.side_effect = ["2026-05-22", "23-12-56"]
+
+            # fm has per_stream_directory=True, but we override to False
+            path = fm.allocate_path(
+                handle="streamer",
+                extension="ts",
+                per_stream_directory=False,
+            )
+
+        assert path.parent == tmp_path
+
+    # ── Directory creation ───────────────────────────────────────
+
+    def test_creates_parent_directory(self, fm: FileManager, tmp_path: Path) -> None:
+        """Parent directory is created automatically."""
+        with patch("app.infrastructure.files.file_manager.datetime") as mock_dt:
+            mock_dt.now.return_value.strftime.side_effect = ["2026-05-22", "23-12-56"]
+
+            path = fm.allocate_path(handle="streamer", extension="ts")
+
+        assert path.parent.exists()
+        assert path.parent.is_dir()

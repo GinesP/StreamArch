@@ -45,7 +45,7 @@ class TestFFmpegRunnerStart:
     """FFmpegRunner.start_recording — process creation."""
 
     def test_starts_ffmpeg_with_expected_command(self) -> None:
-        """start_recording runs ffmpeg with -c copy -f mpegts."""
+        """start_recording runs ffmpeg with robust input flags and -c copy."""
         with patch("app.infrastructure.ffmpeg.process_runner.subprocess.Popen") as mock_popen:
             mock_popen.return_value = _mock_process()
             runner = FFmpegRunner()
@@ -58,17 +58,81 @@ class TestFFmpegRunnerStart:
         assert len(rid) == 32  # uuid4 hex
         mock_popen.assert_called_once()
         args, kwargs = mock_popen.call_args
-        cmd = args[0]
+        cmd: list[str] = args[0]
+
+        # ── Basic structure ─────────────────────────────────────
         assert cmd[0] == "ffmpeg"
-        assert "-i" in cmd
-        assert "https://example.com/stream.m3u8" in cmd
-        assert "-c" in cmd and "copy" in cmd
-        assert "-f" in cmd and "mpegts" in cmd
-        assert "/data/test.ts" in cmd
+        assert cmd[1] == "-y"
+        assert cmd[2] == "-hide_banner"
+
+        # ── Input / network flags (StreamCapQT base) ────────────
+        assert "-protocol_whitelist" in cmd
+        assert "-rw_timeout" in cmd
+        assert "-user_agent" in cmd
+        assert "-thread_queue_size" in cmd
+        assert "-analyzeduration" in cmd
+        assert "-probesize" in cmd
+        assert "-fflags" in cmd
+        assert "+discardcorrupt+igndts" in cmd
+        assert "-reconnect" in cmd
+        assert "-reconnect_at_eof" in cmd
+        assert "-reconnect_streamed" in cmd
+        assert "-reconnect_delay_max" in cmd
+
+        # ── Input ────────────────────────────────────────────────
+        i_pos = cmd.index("-i")
+        assert cmd[i_pos + 1] == "https://example.com/stream.m3u8"
+
+        # All network / input flags appear before -i
+        for flag in ("-protocol_whitelist", "-rw_timeout", "-user_agent",
+                      "-thread_queue_size", "-analyzeduration", "-probesize",
+                      "-reconnect"):
+            assert cmd.index(flag) < i_pos, f"{flag} should be before -i"
+
+        # ── Output flags (StreamCapQT base, after -i) ───────────
+        assert "-sn" in cmd
+        sn_pos = cmd.index("-sn")
+        assert sn_pos > i_pos, "-sn should be after -i"
+        assert "-dn" in cmd
+        dn_pos = cmd.index("-dn")
+        assert dn_pos > i_pos, "-dn should be after -i"
+
+        assert "-max_muxing_queue_size" in cmd
+        mux_pos = cmd.index("-max_muxing_queue_size")
+        assert cmd[mux_pos + 1] == "1024"
+        assert mux_pos > i_pos
+
+        assert "-correct_ts_overflow" in cmd
+        ts_pos = cmd.index("-correct_ts_overflow")
+        assert cmd[ts_pos + 1] == "1"
+        assert ts_pos > i_pos
+
+        assert "-avoid_negative_ts" in cmd
+        ant_pos = cmd.index("-avoid_negative_ts")
+        assert cmd[ant_pos + 1] == "1"
+        assert ant_pos > i_pos
+
+        assert "-flush_packets" in cmd
+        flush_pos = cmd.index("-flush_packets")
+        assert cmd[flush_pos + 1] == "1"
+        assert flush_pos > i_pos
+
+        # ── Map + codec copy ─────────────────────────────────────
+        assert "-map" in cmd
+        map_pos = cmd.index("-map")
+        assert cmd[map_pos + 1] == "0"
+        assert cmd[map_pos + 2] == "-c:v"
+        assert cmd[map_pos + 3] == "copy"
+        assert cmd[map_pos + 4] == "-c:a"
+        assert cmd[map_pos + 5] == "copy"
+        assert "-f" in cmd
+        f_pos = cmd.index("-f")
+        assert cmd[f_pos + 1] == "mpegts"
+        assert cmd[-1] == "/data/test.ts"
 
     def test_passes_headers_as_ffmpeg_args(self) -> None:
         """When headers are provided, they appear as -headers name:value args
-        before -i."""
+        before the input robustness flags and -i."""
         with patch("app.infrastructure.ffmpeg.process_runner.subprocess.Popen") as mock_popen:
             mock_popen.return_value = _mock_process()
             runner = FFmpegRunner()
@@ -82,19 +146,23 @@ class TestFFmpegRunnerStart:
         args, kwargs = mock_popen.call_args
         cmd: list[str] = args[0]
 
-        # -headers args should appear before -i
-        assert "-headers" in cmd
+        # -headers args should appear after -y -hide_banner, before input flags
+        assert cmd[2] == "-hide_banner"
+        assert cmd[3] == "-headers"
+        assert cmd[4] == "Cookie: sessionid=abc"
+        assert cmd[5] == "-headers"
+        assert cmd[6] == "Referer: https://tiktok.com"
+
+        # All headers come before any input flag
         i_pos = cmd.index("-i")
-        cookie_pos = cmd.index("-headers")
-        assert cookie_pos < i_pos
+        last_header_pos = max(
+            i for i, v in enumerate(cmd) if v == "-headers"
+        )
+        assert last_header_pos < i_pos
 
         # Both headers should be present
         assert 'Cookie: sessionid=abc' in cmd
         assert 'Referer: https://tiktok.com' in cmd
-        assert cmd[cmd.index("-headers") + 1] == "Cookie: sessionid=abc"
-        # Second -headers pair
-        second_h = cmd.index("-headers", cookie_pos + 1)
-        assert cmd[second_h + 1] == "Referer: https://tiktok.com"
 
     def test_no_headers_when_none_provided(self) -> None:
         """Without headers, the command has no -headers args."""
@@ -130,6 +198,24 @@ class TestFFmpegRunnerStart:
             runner = FFmpegRunner()
             with pytest.raises(FileNotFoundError):
                 runner.start_recording("url", "/data/test.ts")
+
+    def test_mobile_user_agent(self) -> None:
+        """The user-agent is a fixed mobile Android Chrome UA (StreamCapQT)."""
+        with patch("app.infrastructure.ffmpeg.process_runner.subprocess.Popen") as mock_popen:
+            mock_popen.return_value = _mock_process()
+            runner = FFmpegRunner()
+            runner.start_recording("https://example.com/stream.m3u8", "/data/test.ts")
+
+        args, _ = mock_popen.call_args
+        cmd: list[str] = args[0]
+        ua_pos = cmd.index("-user_agent")
+        ua = cmd[ua_pos + 1]
+
+        # Must be a mobile Android UA (not desktop Windows)
+        assert "Android" in ua
+        assert "Mobile" in ua
+        assert "Windows NT" not in ua
+        assert "Chrome/" in ua
 
     def test_raises_on_popen_error(self) -> None:
         """OSError from Popen is wrapped in RuntimeError."""

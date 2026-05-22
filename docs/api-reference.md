@@ -189,6 +189,26 @@ Lista sesiones de un stream concreto.
 }
 ```
 
+### `POST /api/v1/recordings/{recording_id}/stop`
+Detiene una grabación activa. Idempotente — si la sesión ya está finalizada, la petición se completa sin errores.
+
+#### Respuesta
+```json
+{
+  "status": "stopped"
+}
+```
+
+#### Errores
+| Código HTTP | Condición |
+|-------------|-----------|
+| `400` | `recording_id` no existe |
+| `404` | Ruta no encontrada |
+
+#### Comportamiento
+- Si la sesión está activa (`status == "recording"`): detiene ffmpeg, finaliza la sesión, actualiza artefactos.
+- Si la sesión ya está en estado terminal (completed / failed / aborted / split): no-op (idempotente).
+
 ## Cookies
 
 ### `GET /api/v1/cookies`

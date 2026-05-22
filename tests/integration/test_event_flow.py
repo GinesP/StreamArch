@@ -73,6 +73,7 @@ def _snapshot(**overrides) -> MonitoringSnapshot:
         last_checked_at=overrides.get("last_checked_at", None),
         last_live_at=overrides.get("last_live_at", None),
         current_recording_session_id=overrides.get("current_recording_session_id", None),
+        resolved_stream_url=overrides.get("resolved_stream_url", None),
         last_error_code=overrides.get("last_error_code", None),
         last_error_message=overrides.get("last_error_message", None),
         updated_at=overrides.get("updated_at", NOW),
@@ -228,6 +229,110 @@ class TestMonitoringCycleEvents:
         assert payload["stream_id"] == "t1"
         assert payload["state"] == "recording"
         assert payload["queue_band"] == "fast"
+
+    def test_first_cycle_detects_idle_to_recording(self) -> None:
+        """The FIRST monitoring cycle detects an IDLE→RECORDING transition
+        and starts recording — no manual cache manipulation required.
+
+        This validates the fix for the first-cycle bug: previously the
+        internal cache was empty on the first cycle, so any state change
+        made by the worker (between Phase A and Phase B) was invisible.
+        Now the cache is primed inside ``_process_target`` *before* the
+        worker enqueue, so the pre-worker state is always available for
+        comparison.
+        """
+        event_bus = EventBus()
+        status_events: list[dict] = []
+        started_events: list[dict] = []
+
+        event_bus.subscribe("stream.status_changed", lambda t, p: status_events.append(p))
+        event_bus.subscribe("recording.started", lambda t, p: started_events.append(p))
+
+        target = _target(id="t1")
+
+        target_repo = MagicMock()
+        target_repo.list_all.return_value = [target]
+        target_repo.get.return_value = target
+
+        # ── Simulate a worker that runs between Phase A and Phase B ──
+        # Phase A (_process_target):  snapshot is IDLE
+        # Phase B (detection loop):    snapshot is RECORDING
+        idle_snap = _snapshot(
+            stream_target_id="t1",
+            state=MonitoringState.IDLE,
+            current_recording_session_id=None,
+            resolved_stream_url=None,
+        )
+        recording_snap = _snapshot(
+            stream_target_id="t1",
+            state=MonitoringState.RECORDING,
+            queue_band=QueueBand.FAST,
+            current_recording_session_id=None,
+            resolved_stream_url="https://live.example.com/stream.ts",
+            current_likelihood=1.0,
+        )
+        call_count: int = 0
+
+        def _get_side_effect(stream_id: str):
+            nonlocal call_count
+            call_count += 1
+            # Call 1 → Phase A (_process_target loads snapshot)
+            # Call 2 → Phase B (detection loop)
+            return idle_snap if call_count == 1 else recording_snap
+
+        snapshot_repo = MagicMock()
+        snapshot_repo.get.side_effect = _get_side_effect
+
+        session_repo = MagicMock()
+        session_repo.list_by_target.return_value = []
+
+        queue_planner = QueuePlanner()
+        prediction_engine = MagicMock()
+        prediction_engine.predict.return_value = PredictionResult(
+            likelihood=0.3,
+            confidence=Confidence.LOW,
+            predicted_window_start=None,
+            predicted_window_end=None,
+            next_slot_at=None,
+            ui_state=UiState.IDLE,
+            reasons=[],
+        )
+
+        # ── Wire a mock RecordingService ────────────────────────────
+        recording_service = MagicMock()
+        recording_service.start_recording.return_value = "rec_new"
+
+        cycle = MonitoringCycle(
+            prediction_engine=prediction_engine,
+            stream_target_repo=target_repo,
+            monitoring_snapshot_repo=snapshot_repo,
+            recording_session_repo=session_repo,
+            queue_planner=queue_planner,
+            logger=logging.getLogger(__name__),
+            event_bus=event_bus,
+            worker_pool=None,
+            recording_service=recording_service,
+        )
+
+        # ── One cycle — no manual cache setup ──────────────────────
+        with patch(
+            "app.application.orchestrators.monitoring_cycle.utc_now",
+            return_value=NOW,
+        ):
+            cycle._run_one_cycle()
+
+        # ── Assertions ──────────────────────────────────────────────
+        # state transition event was emitted
+        assert len(status_events) == 1, (
+            f"Expected 1 status_changed, got {len(status_events)}"
+        )
+        assert status_events[0]["state"] == "recording"
+
+        # RecordingService.start_recording was called with the right args
+        recording_service.start_recording.assert_called_once_with(
+            stream_target_id="t1",
+            stream_url="https://live.example.com/stream.ts",
+        )
 
     def test_emits_status_changed_on_live_transition(self) -> None:
         """When the monitoring cycle detects a live stream (transition from

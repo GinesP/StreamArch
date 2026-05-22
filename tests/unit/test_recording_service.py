@@ -13,6 +13,7 @@ import pytest
 
 from app.application.services.recording_service import RecordingService
 from app.domain.monitoring.snapshot import MonitoringSnapshot
+from app.domain.recording.config import RecordingConfig
 from app.domain.shared.types import ArtifactType, ContainerFormat, Platform, utc_now
 from app.domain.stream_target.entities import StreamTarget
 from app.domain.stream_target.value_objects import ScheduleMode
@@ -133,6 +134,33 @@ def cookie_service() -> MagicMock:
     mock = MagicMock()
     mock.get_cookie_string.return_value = "sessionid=abc123; csrftoken=xyz"
     return mock
+
+
+@pytest.fixture
+def service_with_config(
+    runner: MagicMock,
+    file_manager: MagicMock,
+    session_repo: MagicMock,
+    artifact_repo: MagicMock,
+    target_repo: MagicMock,
+    snapshot_repo: MagicMock,
+    event_bus: MagicMock,
+) -> RecordingService:
+    return RecordingService(
+        runner=runner,
+        file_manager=file_manager,
+        session_repo=session_repo,
+        artifact_repo=artifact_repo,
+        target_repo=target_repo,
+        snapshot_repo=snapshot_repo,
+        event_bus=event_bus,
+        recording_config=RecordingConfig(
+            segment_enabled=False,
+            segment_time_seconds=1800,
+            per_stream_directory=False,
+            convert_to_mp4=True,
+        ),
+    )
 
 
 @pytest.fixture
@@ -309,6 +337,33 @@ class TestStartRecording:
         runner.start_recording.assert_called_once()
         _call_kwargs = runner.start_recording.call_args.kwargs
         assert _call_kwargs.get("headers") is None
+
+    # ── Recording config passthrough ─────────────────────────────
+
+    def test_passes_per_stream_directory_from_config(
+        self,
+        service_with_config: RecordingService,
+        file_manager: MagicMock,
+    ) -> None:
+        """The resolved per_stream_directory value is passed to FileManager."""
+        with patch("app.application.services.recording_service.utc_now", return_value=NOW):
+            service_with_config.start_recording("t1", "https://example.com/stream.m3u8")
+
+        file_manager.allocate_path.assert_called_once()
+        kwargs = file_manager.allocate_path.call_args.kwargs
+        assert kwargs.get("per_stream_directory") is False
+
+    def test_default_config(
+        self, service: RecordingService, file_manager: MagicMock
+    ) -> None:
+        """When no config is given, internal defaults are used."""
+        with patch("app.application.services.recording_service.utc_now", return_value=NOW):
+            service.start_recording("t1", "https://example.com/stream.m3u8")
+
+        file_manager.allocate_path.assert_called_once()
+        kwargs = file_manager.allocate_path.call_args.kwargs
+        # Internal default for per_stream_directory is True
+        assert kwargs.get("per_stream_directory") is True
 
 
 # ======================================================================

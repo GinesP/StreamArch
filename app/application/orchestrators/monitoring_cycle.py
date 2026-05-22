@@ -369,6 +369,16 @@ class MonitoringCycle:
         )
         self._snapshot_repo.save(updated)
 
+        # ── Prime last-known state for first-seen targets ─────
+        # Capture the snapshot state BEFORE any worker thread
+        # modifies it, so the transition detection in the main
+        # cycle loop can detect transitions from the very first
+        # cycle onward.  Workers only run after we enqueue below,
+        # so this guaranteed to reflect the pre-worker state.
+        if target.id not in self._last_known_state:
+            self._last_known_state[target.id] = updated.state
+            self._last_known_live[target.id] = updated.is_live
+
         # ── Enqueue for async check if due ───────────────────────
         if should_check:
             self._queue_planner.enqueue(

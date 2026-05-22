@@ -10,6 +10,45 @@ On stop, the ``.ts`` is optionally transmuxed to ``.mp4`` by the
 
 Progress data is extracted from ffmpeg's stderr output by the
 :mod:`app.infrastructure.ffmpeg.progress_parser` module.
+
+Command-line flags
+------------------
+The assembled ffmpeg command mirrors the proven base profile from
+StreamCapQT's ``app/core/media/ffmpeg_builders/base.py``::
+
+    ffmpeg -y                                       # overwrite
+           -hide_banner                             # suppress banner
+           [-headers "Name: Value" ...]              # optional cookies
+           -protocol_whitelist <list>                # security hardening
+           -rw_timeout 10000000                      # 10 s network timeout
+           -user_agent <fixed mobile UA>             # mobile Chrome UA
+           -thread_queue_size 1024                   # avoid queue overflow
+           -analyzeduration 20000000                 # faster startup
+           -probesize 10000000                       # faster startup
+           -fflags +discardcorrupt+igndts            # handle corrupt packets
+           -reconnect 1                              # reconnect on broken pipe
+           -reconnect_at_eof 1
+           -reconnect_streamed 1
+           -reconnect_delay_max 5                    # max 5 s between retries
+           -i <stream_url>                           # input
+           -sn                                       # no subtitles
+           -dn                                       # no data streams
+           -max_muxing_queue_size 1024               # prevent mux overflow
+           -correct_ts_overflow 1                    # timestamp correction
+           -avoid_negative_ts 1                      # shift timestamps
+           -flush_packets 1                          # low-latency flush
+           -map 0                                    # all input streams
+           -c:v copy                                 # no video re-encode
+           -c:a copy                                 # no audio re-encode
+           -f mpegts                                 # TS container
+           <output_path>
+
+Flags deliberately excluded from StreamCapQT's base:
+* ``-v verbose``   — would flood stderr and interfere with progress parsing.
+* ``-loglevel error`` — would suppress progress output needed by the
+  :mod:`~app.infrastructure.ffmpeg.progress_parser` module.
+* ``-bufsize``     — only meaningful when encoding; no effect with ``-c copy``.
+* ``-re``          — input rate-control flag; irrelevant for live HLS sources.
 """
 
 import logging
@@ -33,6 +72,18 @@ _STDERR_MAX_LINES: int = 500
 
 _DEFAULT_STOP_TIMEOUT: int = 10
 """Default timeout (seconds) for graceful ffmpeg stop."""
+
+_USER_AGENT: str = (
+    "Mozilla/5.0 (Linux; Android 14; K) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/130.0.6723.58 Mobile Safari/537.36"
+)
+"""Fixed mobile User-Agent matching StreamCapQT's profile (Android Chrome)."""
+
+_PROTOCOL_WHITELIST: str = (
+    "crypto,file,http,https,tcp,tls,udp,rtp,rtmp,httpproxy"
+)
+"""Allowed network protocols for ffmpeg (StreamCapQT base profile)."""
 
 
 # ── Internal bookkeeping ───────────────────────────────────────────────
@@ -114,11 +165,19 @@ class FFmpegRunner:
 
     # ── Lifecycle ──────────────────────────────────────────────────
 
-    def start_recording(self, stream_url: str, output_path: str, headers: dict[str, str] | None = None) -> str:
+    def start_recording(
+        self,
+        stream_url: str,
+        output_path: str,
+        headers: dict[str, str] | None = None,
+    ) -> str:
         """Start recording *stream_url* to *output_path*.
 
         The recording captures the stream into a ``.ts`` container
         (tolerant to crashes) without re-encoding.
+
+        The ffmpeg command mirrors StreamCapQT's proven base profile
+        (see module docstring for the full flag listing).
 
         Args:
             stream_url: The resolved stream URL to record (m3u8 or
@@ -138,17 +197,48 @@ class FFmpegRunner:
         """
         recording_id = uuid.uuid4().hex
 
+        # ── Global preamble ─────────────────────────────────────
         cmd: list[str] = [
             "ffmpeg",
-            "-y",                         # Overwrite output
+            "-y",                           # Overwrite output
+            "-hide_banner",                 # Suppress copyright banner
         ]
+
+        # ── Optional HTTP headers (before -i) ───────────────────
         if headers:
             for name, value in headers.items():
                 cmd.extend(["-headers", f"{name}: {value}"])
+
+        # ── Input/network flags (StreamCapQT base profile) ──────
         cmd.extend([
-            "-i", stream_url,
-            "-c", "copy",                 # No re-encode
-            "-f", "mpegts",               # Force TS container
+            "-protocol_whitelist", _PROTOCOL_WHITELIST,
+            "-rw_timeout", "10000000",      # 10 s read/write timeout
+            "-user_agent", _USER_AGENT,     # Fixed mobile UA
+            "-thread_queue_size", "1024",   # Prevent queue overflow
+            "-analyzeduration", "20000000", # 20 M — faster startup
+            "-probesize", "10000000",       # 10 M — faster startup
+            "-fflags", "+discardcorrupt+igndts",
+            "-reconnect", "1",              # Reconnect on broken pipe
+            "-reconnect_at_eof", "1",
+            "-reconnect_streamed", "1",
+            "-reconnect_delay_max", "5",    # Max 5 s between retries
+        ])
+
+        # ── Input ───────────────────────────────────────────────
+        cmd.extend(["-i", stream_url])
+
+        # ── Output flags (StreamCapQT base profile) ─────────────
+        cmd.extend([
+            "-sn",                          # No subtitles
+            "-dn",                          # No data streams
+            "-max_muxing_queue_size", "1024",  # Prevent mux overflow
+            "-correct_ts_overflow", "1",    # Timestamp correction
+            "-avoid_negative_ts", "1",      # Shift timestamps
+            "-flush_packets", "1",          # Low-latency flush
+            "-map", "0",                    # All input streams
+            "-c:v", "copy",                 # No video re-encode
+            "-c:a", "copy",                 # No audio re-encode
+            "-f", "mpegts",                 # Force TS container
             output_path,
         ])
 

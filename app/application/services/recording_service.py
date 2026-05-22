@@ -43,6 +43,7 @@ from app.domain.events.events import (
     RecordingStarted,
 )
 from app.domain.recording.artifacts import RecordingArtifact
+from app.domain.recording.config import RecordingConfig, resolve_recording_config
 from app.domain.recording.session import RecordingSession
 from app.domain.shared.types import (
     ArtifactStatus,
@@ -93,6 +94,11 @@ class RecordingService:
         ``current_recording_session_id`` and ``resolved_stream_url``).
     event_bus:
         Optional event bus for emitting domain events.
+    cookie_service:
+        Optional cookie service for authenticated streams.
+    recording_config:
+        Global recording behaviour configuration.  Falls back to
+        :class:`RecordingConfig` internal defaults when ``None``.
     """
 
     def __init__(
@@ -105,6 +111,7 @@ class RecordingService:
         snapshot_repo: MonitoringSnapshotRepository,
         event_bus: EventBus | None = None,
         cookie_service: CookieService | None = None,
+        recording_config: RecordingConfig | None = None,
     ) -> None:
         self._runner = runner
         self._file_manager = file_manager
@@ -114,6 +121,7 @@ class RecordingService:
         self._snapshot_repo = snapshot_repo
         self._event_bus = event_bus
         self._cookie_service = cookie_service
+        self._recording_config = recording_config or RecordingConfig()
 
         # Maps session_id → runner recording_id for targeted stop.
         self._session_to_recording: dict[str, str] = {}
@@ -165,6 +173,9 @@ class RecordingService:
         )
         self._session_repo.save(session)
 
+        # ── Resolve effective recording config ────────────────────
+        config = resolve_recording_config(self._recording_config)
+
         # ── Build optional HTTP headers (cookies) ─────────────────
         headers: dict[str, str] | None = None
         cookie_str = self._cookie_service.get_cookie_string(target.platform.value) if self._cookie_service else ""
@@ -175,6 +186,8 @@ class RecordingService:
         ts_path = self._file_manager.allocate_path(
             handle=target.handle,
             extension="ts",
+            stream_title=None,
+            per_stream_directory=config.per_stream_directory,
         )
         runner_recording_id = self._runner.start_recording(
             stream_url=stream_url,

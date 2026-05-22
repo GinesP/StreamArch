@@ -14,11 +14,13 @@ from app.application.orchestrators.monitoring_cycle import MonitoringCycle
 from app.application.services.cookie_service import CookieService
 from app.application.services.live_check_service import LiveCheckService
 from app.application.services.recording_service import RecordingService
+from app.domain.recording.config import RecordingConfig
 from app.application.commands.add_stream import AddStreamHandler
 from app.application.commands.disable_monitoring import DisableMonitoringHandler
 from app.application.commands.enable_monitoring import EnableMonitoringHandler
 from app.application.commands.force_check import ForceCheckHandler
 from app.application.commands.mark_favorite import MarkFavoriteHandler
+from app.application.commands.stop_recording import StopRecordingHandler
 from app.application.commands.unmark_favorite import UnmarkFavoriteHandler
 from app.application.commands.update_stream import UpdateStreamHandler
 from app.application.queries.list_recordings import ListRecordingsHandler
@@ -96,9 +98,18 @@ def start_application(container: Container) -> None:
     container.recording_session_repo = RecordingSessionRepository(str(db_path))
     container.recording_artifact_repo = RecordingArtifactRepository(str(db_path))
 
+    # ── Recording config (global, may be overridden per stream) ──
+    recording_config = RecordingConfig(
+        segment_enabled=container.config.recording_segment_enabled,
+        segment_time_seconds=container.config.recording_segment_time_seconds,
+        per_stream_directory=container.config.recording_per_stream_directory,
+        convert_to_mp4=container.config.recording_convert_to_mp4,
+    )
+
     # ── File manager ─────────────────────────────────────────────
     container.file_manager = FileManager(
         base_path=Path(container.config.recordings_dir),
+        per_stream_directory=recording_config.per_stream_directory,
     )
     container.file_manager.ensure_directory()
 
@@ -157,6 +168,7 @@ def start_application(container: Container) -> None:
         snapshot_repo=container.monitoring_snapshot_repo,
         event_bus=container.event_bus,
         cookie_service=container.cookie_service,
+        recording_config=recording_config,
     )
 
     container.monitoring_cycle = MonitoringCycle(
@@ -211,6 +223,10 @@ def start_application(container: Container) -> None:
     )
     container.list_recordings_handler = ListRecordingsHandler(
         recording_session_repo=container.recording_session_repo,
+    )
+    container.stop_recording_handler = StopRecordingHandler(
+        recording_session_repo=container.recording_session_repo,
+        recording_service=container.recording_service,
     )
     container.force_check_handler = ForceCheckHandler(
         live_check_service=container.live_check_service,

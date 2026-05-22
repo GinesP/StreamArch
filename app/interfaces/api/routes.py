@@ -19,6 +19,7 @@ from app.application.commands.disable_monitoring import DisableMonitoringCommand
 from app.application.commands.enable_monitoring import EnableMonitoringCommand
 from app.application.commands.force_check import ForceCheckCommand
 from app.application.commands.mark_favorite import MarkFavoriteCommand
+from app.application.commands.stop_recording import StopRecordingCommand
 from app.application.commands.unmark_favorite import UnmarkFavoriteCommand
 from app.application.commands.update_stream import UpdateStreamCommand
 from app.application.queries.get_dashboard_state import GetDashboardStateQuery
@@ -144,6 +145,21 @@ def handle_list_recordings(
     return {"items": [asdict(d) for d in dtos]}, 200
 
 
+def handle_stop_recording(
+    container: Container, params: dict, body: dict | None
+) -> tuple[dict, int]:
+    """POST /api/v1/recordings/{recording_id}/stop — stop an active recording.
+
+    Idempotent — stopping an already-finished session returns 200 with
+    ``{"status": "stopped"}``.  A nonexistent recording_id returns 400.
+    """
+    recording_id = params.get("recording_id", "")
+    container.stop_recording_handler.handle(
+        StopRecordingCommand(recording_id=recording_id)
+    )
+    return {"status": "stopped"}, 200
+
+
 # ── Cookie handlers ─────────────────────────────────────────────────────
 
 
@@ -254,6 +270,7 @@ def build_router() -> Router:
         DELETE /api/v1/streams/{stream_id}/favorite
         GET    /api/v1/dashboard/state
         GET    /api/v1/recordings
+        POST   /api/v1/recordings/{recording_id}/stop
         GET    /api/v1/cookies
         POST   /api/v1/cookies/import
         GET    /api/v1/cookies/{platform}
@@ -285,6 +302,10 @@ def build_router() -> Router:
     )
     router.add("GET", "/api/v1/dashboard/state", handle_dashboard_state)
     router.add("GET", "/api/v1/recordings", handle_list_recordings)
+    router.add(
+        "POST", "/api/v1/recordings/{recording_id}/stop",
+        handle_stop_recording,
+    )
     # ── Cookie routes (import first so it's matched before {platform}) ──
     router.add("GET", "/api/v1/cookies", handle_list_cookie_platforms)
     router.add("POST", "/api/v1/cookies/import", handle_import_cookies)
