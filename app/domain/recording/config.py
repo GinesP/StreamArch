@@ -36,7 +36,7 @@ class RecordingConfig:
     """
 
     segment_enabled: bool = False
-    segment_time_seconds: int = 3600
+    segment_time_seconds: int = 1800
     per_stream_directory: bool = False
     convert_to_mp4: bool = True
 

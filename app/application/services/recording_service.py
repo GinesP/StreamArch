@@ -194,6 +194,8 @@ class RecordingService:
             output_path=str(ts_path),
             headers=headers,
             on_exit=lambda rid: self._on_runner_exit(session_id, rid),
+            segment_enabled=config.segment_enabled,
+            segment_time_seconds=config.segment_time_seconds,
         )
 
         # ── Track session → recording mapping ────────────────────

@@ -363,8 +363,8 @@ class TestStartRecording:
 
         file_manager.allocate_path.assert_called_once()
         kwargs = file_manager.allocate_path.call_args.kwargs
-        # Internal default for per_stream_directory is True
-        assert kwargs.get("per_stream_directory") is True
+        # Internal default for per_stream_directory is False
+        assert kwargs.get("per_stream_directory") is False
 
 
 # ======================================================================

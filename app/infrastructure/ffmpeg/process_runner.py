@@ -214,6 +214,8 @@ class FFmpegRunner:
         output_path: str,
         headers: dict[str, str] | None = None,
         on_exit: _OnExitCallback | None = None,
+        segment_enabled: bool = False,
+        segment_time_seconds: int = 1800,
     ) -> str:
         """Start recording *stream_url* to *output_path*.
 
@@ -288,9 +290,22 @@ class FFmpegRunner:
             "-map", "0",                    # All input streams
             "-c:v", "copy",                 # No video re-encode
             "-c:a", "copy",                 # No audio re-encode
-            "-f", "mpegts",                 # Force TS container
-            output_path,
         ])
+
+        if segment_enabled:
+            # Segmented recording (StreamCapQT pattern)
+            # Output path must use a template like file_%03d.ts
+            cmd.extend([
+                "-f", "segment",
+                "-segment_time", str(segment_time_seconds),
+                "-segment_format", "mpegts",
+                "-reset_timestamps", "1",
+            ])
+            # Append _%03d before extension for segment numbering
+            stem, ext = os.path.splitext(output_path)
+            cmd.append(f"{stem}_%03d{ext}")
+        else:
+            cmd.extend(["-f", "mpegts", output_path])
 
         logger.info(
             "Starting recording %s: %s -> %s",
