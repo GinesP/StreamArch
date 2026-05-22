@@ -33,6 +33,7 @@ class MonitoringSnapshot:
     last_error_code: str | None
     last_error_message: str | None
     updated_at: datetime
+    resolved_stream_url: str | None = None
 
     # ── Invariants ───────────────────────────────────────────────────
 

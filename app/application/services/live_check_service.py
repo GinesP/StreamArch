@@ -82,11 +82,13 @@ class LiveCheckService:
             state = MonitoringState.RECORDING
             likelihood = 1.0
             last_live_at = now
+            resolved_stream_url = result.stream_url
         else:
             state = MonitoringState.IDLE
             likelihood = 0.0
             # Preserve the last-known live timestamp when offline.
             last_live_at = snapshot.last_live_at if snapshot else None
+            resolved_stream_url = None
 
         next_check_at = now + timedelta(seconds=_DEFAULT_CHECK_INTERVAL_SECONDS)
 
@@ -102,6 +104,7 @@ class LiveCheckService:
             snap_kwargs["next_check_at"] = next_check_at
             snap_kwargs["last_checked_at"] = now
             snap_kwargs["last_live_at"] = last_live_at
+            snap_kwargs["resolved_stream_url"] = resolved_stream_url
             snap_kwargs["updated_at"] = now
             self._snapshot_repo.save(snapshot.__class__(**snap_kwargs))
         else:
@@ -116,6 +119,7 @@ class LiveCheckService:
                 last_checked_at=now,
                 last_live_at=last_live_at,
                 current_recording_session_id=None,
+                resolved_stream_url=resolved_stream_url,
                 last_error_code=None,
                 last_error_message=None,
                 updated_at=now,

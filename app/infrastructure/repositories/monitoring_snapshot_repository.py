@@ -33,6 +33,7 @@ def _to_row(snapshot: MonitoringSnapshot) -> dict:
         "last_checked_at": snapshot.last_checked_at.isoformat() if snapshot.last_checked_at else None,
         "last_live_at": snapshot.last_live_at.isoformat() if snapshot.last_live_at else None,
         "current_recording_session_id": snapshot.current_recording_session_id,
+        "resolved_stream_url": snapshot.resolved_stream_url,
         "last_error_code": snapshot.last_error_code,
         "last_error_message": snapshot.last_error_message,
         "updated_at": snapshot.updated_at.isoformat(),
@@ -50,6 +51,7 @@ def _from_row(row: sqlite3.Row) -> MonitoringSnapshot:
         last_checked_at=_parse_dt(row["last_checked_at"]),
         last_live_at=_parse_dt(row["last_live_at"]),
         current_recording_session_id=row["current_recording_session_id"],
+        resolved_stream_url=_col_val(row, "resolved_stream_url"),
         last_error_code=row["last_error_code"],
         last_error_message=row["last_error_message"],
         updated_at=datetime.fromisoformat(row["updated_at"]),
@@ -58,6 +60,18 @@ def _from_row(row: sqlite3.Row) -> MonitoringSnapshot:
 
 def _parse_dt(value: str | None) -> datetime | None:
     return datetime.fromisoformat(value) if value is not None else None
+
+
+def _col_val(row: sqlite3.Row, col: str) -> str | None:
+    """Return the value of *col* from *row*, or ``None`` if missing.
+
+    Different Python versions raise different exceptions for missing
+    string keys on ``sqlite3.Row`` — we catch both.
+    """
+    try:
+        return row[col]
+    except (IndexError, KeyError):
+        return None
 
 
 # ── Repository ────────────────────────────────────────────────────────
@@ -73,6 +87,7 @@ _COLUMNS = (
     "last_checked_at",
     "last_live_at",
     "current_recording_session_id",
+    "resolved_stream_url",
     "last_error_code",
     "last_error_message",
     "updated_at",
