@@ -351,7 +351,7 @@ class MonitoringCycle:
 
         queue_band = get_queue_band(result.likelihood, target.favorite)
 
-        # ── Persist updated snapshot ─────────────────────────────
+        # ── Persist updated snapshot (preserve recording fields) ──
         updated = MonitoringSnapshot(
             stream_target_id=snapshot.stream_target_id,
             state=snapshot.state,
@@ -362,6 +362,7 @@ class MonitoringCycle:
             last_checked_at=snapshot.last_checked_at,
             last_live_at=snapshot.last_live_at,
             current_recording_session_id=snapshot.current_recording_session_id,
+            resolved_stream_url=snapshot.resolved_stream_url,
             last_error_code=snapshot.last_error_code,
             last_error_message=snapshot.last_error_message,
             updated_at=now,

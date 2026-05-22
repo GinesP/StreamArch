@@ -128,6 +128,36 @@ def service(
     )
 
 
+@pytest.fixture
+def cookie_service() -> MagicMock:
+    mock = MagicMock()
+    mock.get_cookie_string.return_value = "sessionid=abc123; csrftoken=xyz"
+    return mock
+
+
+@pytest.fixture
+def service_with_cookies(
+    runner: MagicMock,
+    file_manager: MagicMock,
+    session_repo: MagicMock,
+    artifact_repo: MagicMock,
+    target_repo: MagicMock,
+    snapshot_repo: MagicMock,
+    event_bus: MagicMock,
+    cookie_service: MagicMock,
+) -> RecordingService:
+    return RecordingService(
+        runner=runner,
+        file_manager=file_manager,
+        session_repo=session_repo,
+        artifact_repo=artifact_repo,
+        target_repo=target_repo,
+        snapshot_repo=snapshot_repo,
+        event_bus=event_bus,
+        cookie_service=cookie_service,
+    )
+
+
 # ======================================================================
 # Start Recording
 # ======================================================================
@@ -155,13 +185,15 @@ class TestStartRecording:
     def test_starts_ffmpeg_runner(
         self, service: RecordingService, runner: MagicMock, file_manager: MagicMock
     ) -> None:
-        """The FFmpegRunner is called with the stream URL and allocated path."""
+        """The FFmpegRunner is called with the stream URL, allocated path,
+        and headers=None (no cookie service configured)."""
         with patch("app.application.services.recording_service.utc_now", return_value=NOW):
             service.start_recording("t1", "https://example.com/stream.m3u8")
 
         runner.start_recording.assert_called_once_with(
             stream_url="https://example.com/stream.m3u8",
             output_path=str(file_manager.allocate_path.return_value),
+            headers=None,
         )
 
     def test_creates_raw_ts_artifact(
@@ -218,6 +250,65 @@ class TestStartRecording:
             session_id = service.start_recording("t1", "url")
 
         assert service._session_to_recording[session_id] == "runner-recording-id-123"
+
+    # ── Cookie / header pass-through ──────────────────────────────
+
+    def test_passes_cookie_header_when_service_provides_cookies(
+        self,
+        service_with_cookies: RecordingService,
+        runner: MagicMock,
+        cookie_service: MagicMock,
+    ) -> None:
+        """When CookieService returns a cookie string, it is passed as
+        an HTTP header to the FFmpegRunner."""
+        with patch("app.application.services.recording_service.utc_now", return_value=NOW):
+            service_with_cookies.start_recording("t1", "https://example.com/stream.m3u8")
+
+        runner.start_recording.assert_called_once()
+        _call_kwargs = runner.start_recording.call_args.kwargs
+        assert _call_kwargs.get("headers") == {"Cookie": "sessionid=abc123; csrftoken=xyz"}
+
+    def test_queries_cookie_by_platform(
+        self,
+        service_with_cookies: RecordingService,
+        cookie_service: MagicMock,
+        target_repo: MagicMock,
+    ) -> None:
+        """The cookie service is queried using the target's platform value."""
+        target_repo.get.return_value = _target(platform=Platform.TIKTOK)
+
+        with patch("app.application.services.recording_service.utc_now", return_value=NOW):
+            service_with_cookies.start_recording("t1", "https://example.com/stream.m3u8")
+
+        cookie_service.get_cookie_string.assert_called_once_with("tiktok")
+
+    def test_passes_no_header_when_cookie_service_returns_empty(
+        self,
+        service_with_cookies: RecordingService,
+        runner: MagicMock,
+        cookie_service: MagicMock,
+    ) -> None:
+        """When CookieService returns an empty string, headers is None
+        (no -headers flag added to ffmpeg)."""
+        cookie_service.get_cookie_string.return_value = ""
+
+        with patch("app.application.services.recording_service.utc_now", return_value=NOW):
+            service_with_cookies.start_recording("t1", "https://example.com/stream.m3u8")
+
+        runner.start_recording.assert_called_once()
+        _call_kwargs = runner.start_recording.call_args.kwargs
+        assert _call_kwargs.get("headers") is None
+
+    def test_passes_no_header_when_no_cookie_service(
+        self, service: RecordingService, runner: MagicMock
+    ) -> None:
+        """When no CookieService is configured, headers is None."""
+        with patch("app.application.services.recording_service.utc_now", return_value=NOW):
+            service.start_recording("t1", "https://example.com/stream.m3u8")
+
+        runner.start_recording.assert_called_once()
+        _call_kwargs = runner.start_recording.call_args.kwargs
+        assert _call_kwargs.get("headers") is None
 
 
 # ======================================================================

@@ -53,6 +53,7 @@ from app.domain.shared.types import (
     utc_now,
 )
 from app.domain.stream_target.entities import StreamTarget
+from app.application.services.cookie_service import CookieService
 from app.infrastructure.events.event_bus import EventBus
 from app.infrastructure.ffmpeg.process_runner import FFmpegRunner
 from app.infrastructure.files.file_manager import FileManager
@@ -103,6 +104,7 @@ class RecordingService:
         target_repo: StreamTargetRepository,
         snapshot_repo: MonitoringSnapshotRepository,
         event_bus: EventBus | None = None,
+        cookie_service: CookieService | None = None,
     ) -> None:
         self._runner = runner
         self._file_manager = file_manager
@@ -111,6 +113,7 @@ class RecordingService:
         self._target_repo = target_repo
         self._snapshot_repo = snapshot_repo
         self._event_bus = event_bus
+        self._cookie_service = cookie_service
 
         # Maps session_id → runner recording_id for targeted stop.
         self._session_to_recording: dict[str, str] = {}
@@ -162,6 +165,12 @@ class RecordingService:
         )
         self._session_repo.save(session)
 
+        # ── Build optional HTTP headers (cookies) ─────────────────
+        headers: dict[str, str] | None = None
+        cookie_str = self._cookie_service.get_cookie_string(target.platform.value) if self._cookie_service else ""
+        if cookie_str:
+            headers = {"Cookie": cookie_str}
+
         # ── Allocate file path and start ffmpeg ───────────────────
         ts_path = self._file_manager.allocate_path(
             handle=target.handle,
@@ -170,6 +179,7 @@ class RecordingService:
         runner_recording_id = self._runner.start_recording(
             stream_url=stream_url,
             output_path=str(ts_path),
+            headers=headers,
         )
 
         # ── Track session → recording mapping ────────────────────

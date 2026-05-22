@@ -66,6 +66,52 @@ class TestFFmpegRunnerStart:
         assert "-f" in cmd and "mpegts" in cmd
         assert "/data/test.ts" in cmd
 
+    def test_passes_headers_as_ffmpeg_args(self) -> None:
+        """When headers are provided, they appear as -headers name:value args
+        before -i."""
+        with patch("app.infrastructure.ffmpeg.process_runner.subprocess.Popen") as mock_popen:
+            mock_popen.return_value = _mock_process()
+            runner = FFmpegRunner()
+            rid = runner.start_recording(
+                stream_url="https://example.com/stream.m3u8",
+                output_path="/data/test.ts",
+                headers={"Cookie": "sessionid=abc", "Referer": "https://tiktok.com"},
+            )
+
+        mock_popen.assert_called_once()
+        args, kwargs = mock_popen.call_args
+        cmd: list[str] = args[0]
+
+        # -headers args should appear before -i
+        assert "-headers" in cmd
+        i_pos = cmd.index("-i")
+        cookie_pos = cmd.index("-headers")
+        assert cookie_pos < i_pos
+
+        # Both headers should be present
+        assert 'Cookie: sessionid=abc' in cmd
+        assert 'Referer: https://tiktok.com' in cmd
+        assert cmd[cmd.index("-headers") + 1] == "Cookie: sessionid=abc"
+        # Second -headers pair
+        second_h = cmd.index("-headers", cookie_pos + 1)
+        assert cmd[second_h + 1] == "Referer: https://tiktok.com"
+
+    def test_no_headers_when_none_provided(self) -> None:
+        """Without headers, the command has no -headers args."""
+        with patch("app.infrastructure.ffmpeg.process_runner.subprocess.Popen") as mock_popen:
+            mock_popen.return_value = _mock_process()
+            runner = FFmpegRunner()
+            rid = runner.start_recording(
+                stream_url="https://example.com/stream.m3u8",
+                output_path="/data/test.ts",
+                headers=None,
+            )
+
+        mock_popen.assert_called_once()
+        args, kwargs = mock_popen.call_args
+        cmd: list[str] = args[0]
+        assert "-headers" not in cmd
+
     def test_returns_unique_ids(self) -> None:
         """Each call returns a different recording id."""
         with patch("app.infrastructure.ffmpeg.process_runner.subprocess.Popen") as mock_popen:

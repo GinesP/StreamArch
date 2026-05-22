@@ -114,7 +114,7 @@ class FFmpegRunner:
 
     # ── Lifecycle ──────────────────────────────────────────────────
 
-    def start_recording(self, stream_url: str, output_path: str) -> str:
+    def start_recording(self, stream_url: str, output_path: str, headers: dict[str, str] | None = None) -> str:
         """Start recording *stream_url* to *output_path*.
 
         The recording captures the stream into a ``.ts`` container
@@ -124,6 +124,9 @@ class FFmpegRunner:
             stream_url: The resolved stream URL to record (m3u8 or
                         direct media URL).
             output_path: Full local path for the output ``.ts`` file.
+            headers: Optional HTTP headers to pass to ffmpeg (e.g.
+                     ``{"Cookie": "..."}`` for platforms that require
+                     authentication).
 
         Returns:
             A unique recording ID string.  Pass this to
@@ -138,11 +141,16 @@ class FFmpegRunner:
         cmd: list[str] = [
             "ffmpeg",
             "-y",                         # Overwrite output
+        ]
+        if headers:
+            for name, value in headers.items():
+                cmd.extend(["-headers", f"{name}: {value}"])
+        cmd.extend([
             "-i", stream_url,
             "-c", "copy",                 # No re-encode
             "-f", "mpegts",               # Force TS container
             output_path,
-        ]
+        ])
 
         logger.info(
             "Starting recording %s: %s -> %s",

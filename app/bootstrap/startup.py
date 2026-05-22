@@ -156,6 +156,7 @@ def start_application(container: Container) -> None:
         target_repo=container.stream_target_repo,
         snapshot_repo=container.monitoring_snapshot_repo,
         event_bus=container.event_bus,
+        cookie_service=container.cookie_service,
     )
 
     container.monitoring_cycle = MonitoringCycle(
