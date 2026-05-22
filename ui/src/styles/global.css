@@ -1,0 +1,168 @@
+/* ── Design tokens ───────────────────────────────────────────────────── */
+:root {
+  --bg-primary: #0B0B0C;
+  --bg-card: #121214;
+  --bg-card-hover: #1a1a1e;
+  --bg-sidebar: #0e0e10;
+  --bg-input: #1a1a1e;
+  --border: #2a2a2e;
+  --border-focus: #00E676;
+  --text-primary: #e8e8e8;
+  --text-secondary: #888899;
+  --text-muted: #555566;
+  --accent: #00E676;
+  --accent-dim: #00c866;
+  --danger: #ff5252;
+  --warning: #ffab00;
+  --info: #448aff;
+  --live: #00E676;
+  --idle: #555566;
+  --checking: #448aff;
+  --error: #ff5252;
+  --recording: #ff5252;
+
+  --radius: 8px;
+  --radius-sm: 4px;
+  --shadow: 0 1px 3px rgba(0, 0, 0, 0.4);
+  --transition: 150ms ease;
+
+  --sidebar-width: 220px;
+  --header-height: 52px;
+
+  font-family: "SF Mono", "Cascadia Code", "JetBrains Mono", "Consolas",
+    monospace;
+  font-size: 14px;
+  line-height: 1.5;
+  color: var(--text-primary);
+  background: var(--bg-primary);
+}
+
+/* ── Reset ───────────────────────────────────────────────────────────── */
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  width: 100%;
+}
+
+/* ── Scrollbar ───────────────────────────────────────────────────────── */
+::-webkit-scrollbar {
+  width: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 3px;
+}
+
+/* ── Utility ─────────────────────────────────────────────────────────── */
+button {
+  font-family: inherit;
+  font-size: inherit;
+  cursor: pointer;
+  border: none;
+  outline: none;
+}
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 14px;
+  background: var(--bg-input);
+  color: var(--text-primary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+  transition: background var(--transition), border-color var(--transition),
+    opacity var(--transition);
+}
+
+.btn:hover {
+  background: var(--bg-card-hover);
+  border-color: var(--text-muted);
+}
+
+.btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.btn-accent {
+  background: var(--accent);
+  color: #000;
+  border-color: var(--accent);
+  font-weight: 600;
+}
+
+.btn-accent:hover {
+  background: var(--accent-dim);
+  border-color: var(--accent-dim);
+}
+
+.btn-danger {
+  color: var(--danger);
+  border-color: var(--danger);
+}
+
+.btn-danger:hover {
+  background: rgba(255, 82, 82, 0.1);
+}
+
+.btn-sm {
+  padding: 4px 10px;
+  font-size: 12px;
+}
+
+input,
+select {
+  font-family: inherit;
+  font-size: inherit;
+  color: var(--text-primary);
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 8px 10px;
+  outline: none;
+  transition: border-color var(--transition);
+}
+
+input:focus,
+select:focus {
+  border-color: var(--border-focus);
+}
+
+a {
+  color: var(--accent);
+  text-decoration: none;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+th,
+td {
+  text-align: left;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+th {
+  color: var(--text-secondary);
+  font-weight: 500;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
