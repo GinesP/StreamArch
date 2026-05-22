@@ -26,6 +26,11 @@ def shutdown_application(container: Container, reason: str = "shutdown") -> None
         container.worker_pool.stop()
         container.logger.info("Worker pool stopped")
 
+    # ── Stop the WebSocket server ──────────────────────────────────
+    if container.websocket_handler is not None:
+        container.websocket_handler.stop()
+        container.logger.info("WebSocket server stopped")
+
     # ── Stop the REST API server ────────────────────────────────────
     if container.api_server is not None:
         container.api_server.shutdown()

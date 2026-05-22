@@ -45,8 +45,10 @@ from app.infrastructure.repositories.stream_target_repository import (
 from app.infrastructure.scheduler.platform_semaphores import PlatformSemaphores
 from app.infrastructure.scheduler.queue_planner import QueuePlanner
 from app.infrastructure.scheduler.worker_pool import WorkerPool
+from app.infrastructure.events.event_bus import EventBus
 from app.interfaces.api.routes import build_router
 from app.interfaces.api.server import create_server
+from app.interfaces.websocket.server import WebSocketServer
 from .container import Container
 
 
@@ -116,6 +118,9 @@ def start_application(container: Container) -> None:
     # ── Prediction engine & priority queue system ─────────────────
     container.prediction_engine = PredictionEngine()
 
+    # ── Event bus ─────────────────────────────────────────────────
+    container.event_bus = EventBus()
+
     container.platform_semaphores = PlatformSemaphores(default_limit=3)
     container.queue_planner = QueuePlanner()
     container.worker_pool = WorkerPool(
@@ -133,8 +138,18 @@ def start_application(container: Container) -> None:
         recording_session_repo=container.recording_session_repo,
         queue_planner=container.queue_planner,
         logger=container.logger,
+        event_bus=container.event_bus,
+        worker_pool=container.worker_pool,
     )
     container.monitoring_cycle.start()
+
+    # ── WebSocket server ──────────────────────────────────────────
+    container.websocket_handler = WebSocketServer(
+        host=container.config.ws_host,
+        port=container.config.ws_port,
+        event_bus=container.event_bus,
+    )
+    container.websocket_handler.start()
 
     # ── Application handlers ──────────────────────────────────────
     container.add_stream_handler = AddStreamHandler(
@@ -189,5 +204,10 @@ def start_application(container: Container) -> None:
         "REST API listening on %s:%s",
         container.config.api_host,
         container.config.api_port,
+    )
+    container.logger.info(
+        "WebSocket server listening on ws://%s:%s/ws/events",
+        container.config.ws_host,
+        container.config.ws_port,
     )
     container.logger.info("StreamArch core started successfully")

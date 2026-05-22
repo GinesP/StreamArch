@@ -268,6 +268,62 @@ Setea o actualiza una cookie individual.
 - `not_found`
 - `internal_error`
 
+## WebSocket
+
+El core expone un endpoint WebSocket para eventos en tiempo real.
+
+### Endpoint
+
+```
+ws://127.0.0.1:8900/ws/events
+```
+
+### Puerto
+
+Configurable vía `AppConfig.ws_port` (default 8900). Host configurable vía `AppConfig.ws_host` (default `"127.0.0.1"`).
+
+### Envelope
+
+Cada mensaje sigue este formato:
+
+```json
+{
+  "seq": 1051,
+  "type": "stream.status_changed",
+  "timestamp": "2026-05-20T20:02:10Z",
+  "payload": {}
+}
+```
+
+- `seq`: entero auto-incremental por instancia del servidor.
+- `type`: tipo de evento (ver tabla abajo).
+- `timestamp`: ISO 8601 UTC.
+- `payload`: dict específico del evento.
+
+### Eventos
+
+| Tipo | Disparo | Payload |
+|------|---------|---------|
+| `stream.status_changed` | Cambio de estado de un target | `stream_id`, `state`, `queue_band`, `likelihood`, `confidence`, `ui_state` |
+| `stream.forecast_updated` | Predicción actualizada | `stream_id`, `likelihood`, `confidence`, `ui_state`, `next_check_at`, `predicted_window`, `reasons` |
+| `recording.started` | Nueva grabación detectada | `recording_id`, `stream_id`, `started_at`, `artifact_path` |
+| `recording.progress` | Telemetría durante grabación | `recording_id`, `stream_id`, `duration_seconds`, `size_bytes`, `bitrate_kbps`, `fps`, `speed` |
+| `recording.finished` | Grabación finalizada | `recording_id`, `stream_id`, `status`, `ended_at` |
+| `postprocess.updated` | Post-procesamiento completado | _por definir_ |
+| `queue.health_updated` | Estado periódico de colas (cada ciclo) | `fast`, `medium`, `slow` con `depth` y `workers` |
+| `system.alert` | Alerta del sistema | `message`, `code` (ej: `disk_full`, `shutdown_started`) |
+
+### Flujo esperado
+
+1. Cliente pide snapshot por REST (`GET /api/v1/dashboard/state`).
+2. Cliente abre WebSocket a `/ws/events`.
+3. Core envía eventos incrementales.
+4. Si se corta la conexión, cliente vuelve a pedir snapshot.
+
+### Heartbeat
+
+El servidor envía pings cada 30s (configurado vía `ping_interval` de la librería `websockets`). El cliente debe responder con pong para mantener la conexión viva.
+
 ## Notas operativas
 
 ### Cookies
@@ -276,7 +332,7 @@ Setea o actualiza una cookie individual.
 
 ### Estado de la API
 - No hay autenticación aún.
-- No hay WebSocket aún.
+- WebSocket implementado en `/ws/events`. Ver sección WebSocket arriba.
 - No hay scheduler ni forecast expuestos todavía.
 
 ## Siguiente paso

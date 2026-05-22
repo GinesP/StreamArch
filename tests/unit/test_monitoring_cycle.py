@@ -1,8 +1,9 @@
 """Tests for MonitoringCycle — orchestrator that runs in a background
-thread, periodically checking all enabled stream targets.
+thread, periodically evaluating all enabled stream targets, computing
+predictions, and enqueuing due live checks to the queue system.
 
-All external dependencies (repositories, prediction engine, live check
-service) are mocked so these tests are fast, deterministic, and isolated.
+All external dependencies (repositories, prediction engine, queue
+planner) are mocked so these tests are fast, deterministic, and isolated.
 """
 
 import logging
@@ -101,14 +102,14 @@ def mock_engine() -> MagicMock:
 
 
 @pytest.fixture
-def mock_live_check() -> MagicMock:
+def mock_queue_planner() -> MagicMock:
     return MagicMock()
 
 
 @pytest.fixture
 def cycle(
     mock_engine: MagicMock,
-    mock_live_check: MagicMock,
+    mock_queue_planner: MagicMock,
     mock_repos: dict,
     logger: logging.Logger,
 ) -> MonitoringCycle:
@@ -119,10 +120,10 @@ def cycle(
     """
     return MonitoringCycle(
         prediction_engine=mock_engine,
-        live_check_service=mock_live_check,
         stream_target_repo=mock_repos["target_repo"],
         monitoring_snapshot_repo=mock_repos["snapshot_repo"],
         recording_session_repo=mock_repos["session_repo"],
+        queue_planner=mock_queue_planner,
         logger=logger,
         loop_interval_seconds=3600,  # 1 hour — prevents accidental wake-up
         period_days=30.0,
@@ -167,7 +168,7 @@ class TestCycleSingleTarget:
         cycle,
         mock_repos,
         mock_engine,
-        mock_live_check,
+        mock_queue_planner,
         target_id="t1",
         next_check_at=None,
         return_result=None,
@@ -200,51 +201,53 @@ class TestCycleSingleTarget:
             cycle._run_one_cycle()
         return snap
 
-    def test_processes_enabled_target(self, cycle, mock_repos, mock_engine, mock_live_check) -> None:
+    def test_processes_enabled_target(
+        self, cycle, mock_repos, mock_engine, mock_queue_planner
+    ) -> None:
         """Enabled target with snapshot — predicts and saves."""
-        self.process_target(cycle, mock_repos, mock_engine, mock_live_check)
+        self.process_target(cycle, mock_repos, mock_engine, mock_queue_planner)
 
         # Prediction was called
         mock_engine.predict.assert_called_once()
         # Snapshot was saved
         mock_repos["snapshot_repo"].save.assert_called_once()
-        # Live check triggered (no next_check_at)
-        mock_live_check.check_stream.assert_called_once_with("t1")
+        # Enqueued for async check (no next_check_at)
+        mock_queue_planner.enqueue.assert_called_once_with("t1", QueueBand.MEDIUM, "twitch")
 
-    def test_triggers_check_when_next_check_at_is_none(
-        self, cycle, mock_repos, mock_engine, mock_live_check
+    def test_enqueues_when_next_check_at_is_none(
+        self, cycle, mock_repos, mock_engine, mock_queue_planner
     ) -> None:
-        """No next_check_at → live check is triggered."""
+        """No next_check_at → target is enqueued."""
         self.process_target(
-            cycle, mock_repos, mock_engine, mock_live_check,
+            cycle, mock_repos, mock_engine, mock_queue_planner,
             next_check_at=None,
         )
-        mock_live_check.check_stream.assert_called_once_with("t1")
+        mock_queue_planner.enqueue.assert_called_once()
 
-    def test_triggers_check_when_next_check_at_is_past(
-        self, cycle, mock_repos, mock_engine, mock_live_check
+    def test_enqueues_when_next_check_at_is_past(
+        self, cycle, mock_repos, mock_engine, mock_queue_planner
     ) -> None:
-        """next_check_at in the past → live check is triggered."""
+        """next_check_at in the past → target is enqueued."""
         self.process_target(
-            cycle, mock_repos, mock_engine, mock_live_check,
+            cycle, mock_repos, mock_engine, mock_queue_planner,
             next_check_at=NOW - timedelta(seconds=10),
         )
-        mock_live_check.check_stream.assert_called_once_with("t1")
+        mock_queue_planner.enqueue.assert_called_once()
 
-    def test_skips_check_when_next_check_at_is_future(
-        self, cycle, mock_repos, mock_engine, mock_live_check
+    def test_skips_enqueue_when_next_check_at_is_future(
+        self, cycle, mock_repos, mock_engine, mock_queue_planner
     ) -> None:
-        """next_check_at in the future → no live check."""
+        """next_check_at in the future → no enqueue."""
         self.process_target(
-            cycle, mock_repos, mock_engine, mock_live_check,
+            cycle, mock_repos, mock_engine, mock_queue_planner,
             next_check_at=NOW + timedelta(seconds=300),
         )
-        mock_live_check.check_stream.assert_not_called()
+        mock_queue_planner.enqueue.assert_not_called()
 
-    def test_re_reads_snapshot_after_check(
-        self, cycle, mock_repos, mock_engine, mock_live_check
+    def test_prediction_uses_current_snapshot(
+        self, cycle, mock_repos, mock_engine, mock_queue_planner
     ) -> None:
-        """After check_stream is called, the snapshot is re-read from the repo."""
+        """Prediction uses the snapshot as loaded — no re-read after check."""
         target = _target(id="t1")
         mock_repos["target_repo"].list_all.return_value = [target]
 
@@ -254,34 +257,18 @@ class TestCycleSingleTarget:
         sessions = []
         mock_repos["session_repo"].list_by_target.return_value = sessions
 
-        # After check_stream, the repo returns an updated snapshot
-        updated_snap = _snapshot(
-            stream_target_id="t1",
-            state=MonitoringState.IDLE,
-            current_likelihood=0.0,
-            last_checked_at=NOW,
-        )
-
-        def get_side_effect(stream_id):
-            if stream_id == "t1":
-                return updated_snap
-            return None
-
-        mock_repos["snapshot_repo"].get.side_effect = [initial_snap, updated_snap]
-
         result = _result(likelihood=0.3, confidence=Confidence.LOW)
         mock_engine.predict.return_value = result
 
         cycle._run_one_cycle()
 
-        # Prediction used the *updated* snapshot
+        # Prediction used the initial snapshot (not re-read after a check)
         predict_call = mock_engine.predict.call_args
         assert predict_call is not None
-        # The snapshot passed to predict should be the one after check
-        assert predict_call.kwargs["snapshot"] is updated_snap
+        assert predict_call.kwargs["snapshot"] is initial_snap
 
     def test_creates_snapshot_for_new_target(
-        self, cycle, mock_repos, mock_engine, mock_live_check
+        self, cycle, mock_repos, mock_engine, mock_queue_planner
     ) -> None:
         """Target with no existing snapshot gets a default before processing."""
         target = _target(id="new_target")
@@ -300,8 +287,10 @@ class TestCycleSingleTarget:
         ):
             cycle._run_one_cycle()
 
-        # Live check was triggered (no next_check_at)
-        mock_live_check.check_stream.assert_called_once_with("new_target")
+        # Enqueued because no next_check_at
+        mock_queue_planner.enqueue.assert_called_once_with(
+            "new_target", QueueBand.SLOW, "twitch"
+        )
 
         # A snapshot was saved — verify key fields
         saved = mock_repos["snapshot_repo"].save.call_args[0][0]
@@ -310,7 +299,7 @@ class TestCycleSingleTarget:
         assert saved.current_confidence == Confidence.LOW
 
     def test_prediction_data_flows_to_snapshot(
-        self, cycle, mock_repos, mock_engine, mock_live_check
+        self, cycle, mock_repos, mock_engine, mock_queue_planner
     ) -> None:
         """Prediction engine output is correctly mapped to the saved snapshot."""
         target = _target(id="t1", favorite=True)
@@ -345,7 +334,7 @@ class TestCycleSingleTarget:
         assert saved.queue_band in (QueueBand.FAST, QueueBand.MEDIUM)
 
     def test_provides_session_count_to_engine(
-        self, cycle, mock_repos, mock_engine, mock_live_check
+        self, cycle, mock_repos, mock_engine, mock_queue_planner
     ) -> None:
         """The number of recording sessions is passed to the prediction engine."""
         target = _target(id="t1")
@@ -368,7 +357,7 @@ class TestCycleSingleTarget:
         assert call_kwargs["period_days"] == 30.0
 
     def test_uses_current_likelihood_as_previous_priority(
-        self, cycle, mock_repos, mock_engine, mock_live_check
+        self, cycle, mock_repos, mock_engine, mock_queue_planner
     ) -> None:
         """The snapshot's current_likelihood is passed as previous_priority."""
         target = _target(id="t1")
@@ -389,7 +378,7 @@ class TestCycleSingleTarget:
         assert call_kwargs["previous_priority"] == 0.77
 
     def test_records_error_count(
-        self, cycle, mock_repos, mock_engine, mock_live_check, caplog
+        self, cycle, mock_repos, mock_engine, mock_queue_planner, caplog
     ) -> None:
         """When a target raises, the error is logged and cycle continues.
 
@@ -468,21 +457,25 @@ class TestCycleLifecycle:
 
 
 class TestCycleConfig:
-    def test_custom_loop_interval(self, logger, mock_repos, mock_engine, mock_live_check) -> None:
+    def test_custom_loop_interval(
+        self, logger, mock_repos, mock_engine, mock_queue_planner
+    ) -> None:
         """Custom loop_interval_seconds is used for the sleep between cycles."""
         c = MonitoringCycle(
             prediction_engine=mock_engine,
-            live_check_service=mock_live_check,
             stream_target_repo=mock_repos["target_repo"],
             monitoring_snapshot_repo=mock_repos["snapshot_repo"],
             recording_session_repo=mock_repos["session_repo"],
+            queue_planner=mock_queue_planner,
             logger=logger,
             loop_interval_seconds=42,
             period_days=30.0,
         )
         assert c._loop_interval == 42
 
-    def test_custom_period_days(self, logger, mock_repos, mock_engine, mock_live_check) -> None:
+    def test_custom_period_days(
+        self, logger, mock_repos, mock_engine, mock_queue_planner
+    ) -> None:
         """Custom period_days is passed through to prediction context."""
         target = _target(id="t1")
         mock_repos["target_repo"].list_all.return_value = [target]
@@ -492,10 +485,10 @@ class TestCycleConfig:
 
         c = MonitoringCycle(
             prediction_engine=mock_engine,
-            live_check_service=mock_live_check,
             stream_target_repo=mock_repos["target_repo"],
             monitoring_snapshot_repo=mock_repos["snapshot_repo"],
             recording_session_repo=mock_repos["session_repo"],
+            queue_planner=mock_queue_planner,
             logger=logger,
             loop_interval_seconds=3600,
             period_days=60.0,

@@ -35,6 +35,7 @@ class Container:
     platform_semaphores: object = None
     queue_planner: object = None
     worker_pool: object = None
+    event_bus: object = None
 
     # ── Domain ────────────────────────────────────────────────────
     prediction_engine: object = None

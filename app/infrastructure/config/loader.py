@@ -43,6 +43,10 @@ class AppConfig:
     api_host: str = field(default="127.0.0.1")
     api_port: int = field(default=8899)
 
+    # ── WebSocket ────────────────────────────────────────────────
+    ws_host: str = field(default="127.0.0.1")
+    ws_port: int = field(default=8900)
+
     # ── Cookies ─────────────────────────────────────────────────
     cookies_dir: str = field(default="./data/cookies")
 

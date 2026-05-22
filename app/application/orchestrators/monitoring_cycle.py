@@ -11,9 +11,9 @@ Flow per cycle
 5. If a live check is due (no ``next_check_at`` or it is in the past),
    enqueue the target to the ``QueuePlanner`` so the ``WorkerPool``
    processes it asynchronously.
-
-This replaces the previous inline ``check_stream()`` call — the actual
-HTTP resolution now happens in worker threads managed by ``WorkerPool``.
+6. After processing all targets, detect state changes and emit events
+   via the ``EventBus`` (``stream.status_changed``, ``recording.started``,
+   ``queue.health_updated``).
 """
 
 import logging
@@ -28,8 +28,9 @@ from app.domain.prediction.policy import (
     get_interval_seconds,
     get_queue_band,
 )
-from app.domain.shared.types import Confidence, utc_now
+from app.domain.shared.types import Confidence, QueueBand, utc_now
 from app.domain.stream_target.entities import StreamTarget
+from app.infrastructure.events.event_bus import EventBus
 from app.infrastructure.repositories.monitoring_snapshot_repository import (
     MonitoringSnapshotRepository,
 )
@@ -40,6 +41,7 @@ from app.infrastructure.repositories.stream_target_repository import (
     StreamTargetRepository,
 )
 from app.infrastructure.scheduler.queue_planner import QueuePlanner
+from app.infrastructure.scheduler.worker_pool import WorkerPool
 
 
 class MonitoringCycle:
@@ -85,6 +87,8 @@ class MonitoringCycle:
         logger: logging.Logger,
         loop_interval_seconds: int = 15,
         period_days: float = 30.0,
+        event_bus: EventBus | None = None,
+        worker_pool: WorkerPool | None = None,
     ) -> None:
         self._prediction_engine = prediction_engine
         self._target_repo = stream_target_repo
@@ -94,9 +98,15 @@ class MonitoringCycle:
         self._logger = logger
         self._loop_interval = loop_interval_seconds
         self._period_days = period_days
+        self._event_bus = event_bus
+        self._worker_pool = worker_pool
 
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
+
+        # ── Last-known state cache (for event detection) ─────────
+        self._last_known_state: dict[str, MonitoringState] = {}
+        self._last_known_live: dict[str, bool] = {}
 
     # ── Lifecycle ─────────────────────────────────────────────────────
 
@@ -167,7 +177,10 @@ class MonitoringCycle:
         """Evaluate every enabled stream target once.
 
         Logs a summary with the number of targets processed and any
-        errors encountered.
+        errors encountered.  After processing, reads fresh snapshots
+        from the repository to detect state transitions (which may have
+        been changed by ``LiveCheckService`` in worker threads between
+        cycles) and emits events via the ``EventBus``.
         """
         targets = self._target_repo.list_all()
         enabled = [t for t in targets if t.enabled]
@@ -192,6 +205,53 @@ class MonitoringCycle:
                     target.handle,
                 )
                 errors += 1
+
+        # ── Detect state changes and emit events ──────────────────
+        if self._event_bus is not None:
+            for target in enabled:
+                snapshot = self._snapshot_repo.get(target.id)
+                if snapshot is None:
+                    continue
+
+                # Only emit events when we have a prior state in cache
+                # (first cycle populates the cache; subsequent cycles detect
+                # changes made by LiveCheckService in worker threads.)
+                old_state = self._last_known_state.get(target.id)
+                old_was_live = self._last_known_live.get(target.id)
+
+                if old_state is not None:
+                    if old_state != snapshot.state:
+                        self._event_bus.publish(
+                            "stream.status_changed",
+                            {
+                                "stream_id": target.id,
+                                "state": snapshot.state.value,
+                                "queue_band": snapshot.queue_band.value
+                                if snapshot.queue_band else None,
+                                "likelihood": snapshot.current_likelihood,
+                                "confidence": snapshot.current_confidence.value,
+                                "ui_state": snapshot.state.value,
+                            },
+                        )
+
+                    if old_was_live is not None and snapshot.is_live and not old_was_live:
+                        self._event_bus.publish(
+                            "recording.started",
+                            {
+                                "stream_id": target.id,
+                                "recording_id": (
+                                    snapshot.current_recording_session_id or ""
+                                ),
+                                "started_at": utc_now().isoformat(),
+                                "artifact_path": "",
+                            },
+                        )
+
+                # Update cache for next cycle
+                self._last_known_state[target.id] = snapshot.state
+                self._last_known_live[target.id] = snapshot.is_live
+
+            self._emit_queue_health()
 
         self._logger.info(
             "Monitoring cycle complete: %d/%d targets processed, "
@@ -299,3 +359,21 @@ class MonitoringCycle:
             return True
 
         return False
+
+    # ── Event emission (helpers) ──────────────────────────────────────
+
+    def _emit_queue_health(self) -> None:
+        """Emit periodic queue health summary."""
+        payload: dict[str, dict[str, int]] = {}
+        for band in QueueBand:
+            depth = self._queue_planner.queue_depth(band)
+            workers = 0
+            if self._worker_pool is not None:
+                wc = self._worker_pool.worker_count
+                workers = wc.get(band, 0)
+            payload[band.value] = {
+                "depth": depth,
+                "workers": workers,
+            }
+
+        self._event_bus.publish("queue.health_updated", payload)
