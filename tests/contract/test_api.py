@@ -30,6 +30,7 @@ from app.application.commands.mark_favorite import (
     MarkFavoriteCommand,
     MarkFavoriteHandler,
 )
+from app.application.commands.stop_recording import StopRecordingHandler
 from app.application.commands.unmark_favorite import (
     UnmarkFavoriteCommand,
     UnmarkFavoriteHandler,
@@ -140,6 +141,7 @@ def container(db_path, tmp_path) -> Container:
     c.stream_target_repo = StreamTargetRepository(db_path)
     c.monitoring_snapshot_repo = MonitoringSnapshotRepository(db_path)
     c.recording_session_repo = RecordingSessionRepository(db_path)
+    c.recording_artifact_repo = MagicMock()
 
     c.cookie_service = CookieService(
         store=CookieStore(base_dir=str(tmp_path / "cookies")),
@@ -175,6 +177,11 @@ def container(db_path, tmp_path) -> Container:
     )
     c.list_recordings_handler = ListRecordingsHandler(
         recording_session_repo=c.recording_session_repo,
+    )
+    c.recording_service = MagicMock()
+    c.stop_recording_handler = StopRecordingHandler(
+        recording_session_repo=c.recording_session_repo,
+        recording_service=c.recording_service,
     )
 
     # ── Live-check (mocked chain, real repos) ─────────────────────
@@ -246,6 +253,27 @@ class TestApiContract:
         assert len(data["items"]) == 1
         assert data["items"][0]["handle"] == "teststreamer"
         assert data["items"][0]["id"] == stream_id
+
+    def test_400_on_duplicate_create(self, conn: HTTPConnection) -> None:
+        body = {
+            "platform": "twitch",
+            "handle": "duplicate_api",
+            "source_url": "https://twitch.tv/duplicate_api",
+            "display_name": "First",
+        }
+        status, data = _json_request(conn, "POST", "/api/v1/streams", body)
+        assert status == 201
+
+        body2 = {
+            "platform": "twitch",
+            "handle": "duplicate_api",
+            "source_url": "https://twitch.tv/duplicate_api",
+            "display_name": "Second",
+        }
+        status, data = _json_request(conn, "POST", "/api/v1/streams", body2)
+        assert status == 400
+        assert data["error"]["code"] == "bad_request"
+        assert "already exists" in data["error"]["message"]
 
     def test_update_stream(self, conn: HTTPConnection) -> None:
         # Arrange — create a stream
@@ -675,6 +703,103 @@ class TestApiContract:
         assert item["error_code"] is None
         assert item["error_message"] is None
         assert item["split_reason"] is None
+
+    # ── stop recording ────────────────────────────────────────────
+
+    def test_stop_recording_returns_stopped(
+        self, conn: HTTPConnection
+    ) -> None:
+        """Stopping an active recording returns 200 with status 'stopped'."""
+        from app.domain.shared.types import RecordingStatus
+
+        container = APIHandler.container
+        session_id = self._seed_recording(
+            container,
+            id="stop-active",
+            status=RecordingStatus.RECORDING,
+        )
+
+        status, data = _json_request(
+            conn, "POST", f"/api/v1/recordings/{session_id}/stop"
+        )
+        assert status == 200
+        assert data == {"status": "stopped"}
+        container.recording_service.stop_recording.assert_called_once_with(
+            session_id
+        )
+
+    def test_stop_recording_already_finished(
+        self, conn: HTTPConnection
+    ) -> None:
+        """Stopping an already-finished session is idempotent (200)."""
+        from app.domain.shared.types import RecordingStatus
+
+        container = APIHandler.container
+        session_id = self._seed_recording(
+            container,
+            id="stop-finished",
+            status=RecordingStatus.COMPLETED,
+        )
+
+        status, data = _json_request(
+            conn, "POST", f"/api/v1/recordings/{session_id}/stop"
+        )
+        assert status == 200
+        assert data == {"status": "stopped"}
+        # recording_service.stop_recording should NOT be called for
+        # already-finished sessions.
+        container.recording_service.stop_recording.assert_not_called()
+
+    def test_stop_recording_on_missing_session(
+        self, conn: HTTPConnection
+    ) -> None:
+        """Stopping a nonexistent session returns 400."""
+        status, data = _json_request(
+            conn, "POST", "/api/v1/recordings/nonexistent/stop"
+        )
+        assert status == 400
+        assert data["error"]["code"] == "bad_request"
+        assert "not found" in data["error"]["message"]
+
+    def test_stop_recording_on_split_session(
+        self, conn: HTTPConnection
+    ) -> None:
+        """Stopping a split session is idempotent (200)."""
+        from app.domain.shared.types import RecordingStatus
+
+        container = APIHandler.container
+        session_id = self._seed_recording(
+            container,
+            id="stop-split",
+            status=RecordingStatus.SPLIT,
+        )
+
+        status, data = _json_request(
+            conn, "POST", f"/api/v1/recordings/{session_id}/stop"
+        )
+        assert status == 200
+        assert data == {"status": "stopped"}
+        container.recording_service.stop_recording.assert_not_called()
+
+    def test_stop_recording_on_failed_session(
+        self, conn: HTTPConnection
+    ) -> None:
+        """Stopping a failed session is idempotent (200)."""
+        from app.domain.shared.types import RecordingStatus
+
+        container = APIHandler.container
+        session_id = self._seed_recording(
+            container,
+            id="stop-failed",
+            status=RecordingStatus.FAILED,
+        )
+
+        status, data = _json_request(
+            conn, "POST", f"/api/v1/recordings/{session_id}/stop"
+        )
+        assert status == 200
+        assert data == {"status": "stopped"}
+        container.recording_service.stop_recording.assert_not_called()
 
     # ── Cookies ────────────────────────────────────────────────────
 

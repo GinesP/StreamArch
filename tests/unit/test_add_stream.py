@@ -115,6 +115,24 @@ class TestAddStreamHandler:
         with pytest.raises(ValueError, match="Invalid schedule_mode"):
             handler.handle(cmd)
 
+    def test_rejects_duplicate_platform_handle(self, handler) -> None:
+        cmd = AddStreamCommand(
+            platform="twitch",
+            handle="duplicate",
+            source_url="https://twitch.tv/duplicate",
+            display_name="First Duplicate",
+        )
+        handler.handle(cmd)
+
+        cmd2 = AddStreamCommand(
+            platform="twitch",
+            handle="duplicate",
+            source_url="https://twitch.tv/duplicate",
+            display_name="Second Duplicate",
+        )
+        with pytest.raises(ValueError, match="already exists"):
+            handler.handle(cmd2)
+
     def test_returns_different_ids_each_time(self, handler) -> None:
         cmd1 = AddStreamCommand(
             platform="twitch", handle="a", source_url="https://a.tv", display_name="A"

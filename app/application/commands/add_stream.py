@@ -87,6 +87,14 @@ class AddStreamHandler:
         """Execute and return the new stream target id."""
         _validate(cmd)
 
+        # Prevent duplicate creation — uniqueness defined as (platform, handle).
+        existing = self._target_repo.find_by_platform_handle(cmd.platform, cmd.handle)
+        if existing is not None:
+            raise ValueError(
+                f"A stream target for {cmd.platform}/{cmd.handle.strip()} "
+                f"already exists (id={existing.id})"
+            )
+
         now = utc_now()
         target_id = str(uuid.uuid4())
 

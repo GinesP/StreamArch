@@ -126,6 +126,22 @@ class StreamTargetRepository:
         finally:
             conn.close()
 
+    def find_by_platform_handle(self, platform: str, handle: str) -> StreamTarget | None:
+        """Return a target by ``(platform, handle)``, or ``None`` if not found.
+
+        Handles are compared after stripping leading/trailing whitespace
+        (consistent with how the handler normalises input).
+        """
+        conn = get_connection(self._db_path)
+        try:
+            row = conn.execute(
+                "SELECT * FROM stream_targets WHERE platform = ? AND handle = ?",
+                (platform, handle.strip()),
+            ).fetchone()
+            return _from_row(row) if row is not None else None
+        finally:
+            conn.close()
+
     def list_all(self) -> list[StreamTarget]:
         """Return every stream target in the database."""
         conn = get_connection(self._db_path)
