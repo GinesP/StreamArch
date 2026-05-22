@@ -28,8 +28,8 @@ class RecordingConfig:
         ``True``.  Default 3600 (1 hour).
     per_stream_directory:
         If ``True`` the recording file is placed in a sub-directory
-        named after the stream's handle.  Default ``True`` (current
-        behaviour).
+        named after the stream's handle.  Default ``False`` (flat
+        recordings directory).
     convert_to_mp4:
         If ``True`` the temporary ``.ts`` file is transmuxed to
         ``.mp4`` after the recording stops.  Default ``True``.
@@ -37,7 +37,7 @@ class RecordingConfig:
 
     segment_enabled: bool = False
     segment_time_seconds: int = 3600
-    per_stream_directory: bool = True
+    per_stream_directory: bool = False
     convert_to_mp4: bool = True
 
 

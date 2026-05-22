@@ -13,5 +13,9 @@
     "cookies_dir": "./data/cookies",
     "db_pool_size": 1,
     "api_host": "127.0.0.1",
-    "api_port": 8899
+    "api_port": 8899,
+    "recording_segment_enabled": false,
+    "recording_segment_time_seconds": 3600,
+    "recording_per_stream_directory": false,
+    "recording_convert_to_mp4": true
 }

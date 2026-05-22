@@ -53,7 +53,7 @@ class AppConfig:
     # ── Recording ─────────────────────────────────────────────────
     recording_segment_enabled: bool = field(default=False)
     recording_segment_time_seconds: int = field(default=3600)
-    recording_per_stream_directory: bool = field(default=True)
+    recording_per_stream_directory: bool = field(default=False)
     recording_convert_to_mp4: bool = field(default=True)
 
     # ── Database ─────────────────────────────────────────────────

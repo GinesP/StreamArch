@@ -34,7 +34,7 @@ class TestRecordingConfigDefaults:
 
     def test_default_per_stream_directory(self) -> None:
         config = RecordingConfig()
-        assert config.per_stream_directory is True
+        assert config.per_stream_directory is False
 
     def test_default_convert_to_mp4(self) -> None:
         config = RecordingConfig()
@@ -48,7 +48,7 @@ class TestResolveRecordingConfig:
         config = resolve_recording_config(global_config=None)
         assert config.segment_enabled is False
         assert config.segment_time_seconds == 3600
-        assert config.per_stream_directory is True
+        assert config.per_stream_directory is False
         assert config.convert_to_mp4 is True
 
     def test_global_config_is_preserved(self) -> None:
