@@ -193,6 +193,7 @@ class RecordingService:
             stream_url=stream_url,
             output_path=str(ts_path),
             headers=headers,
+            on_exit=lambda rid: self._on_runner_exit(session_id, rid),
         )
 
         # ── Track session → recording mapping ────────────────────

@@ -323,11 +323,16 @@ class MonitoringCycle:
                 updated_at=now,
             )
 
-        # ── Check if a live check is due ─────────────────────────
-        should_check = (
-            snapshot.next_check_at is None
-            or snapshot.next_check_at <= now
-        )
+        # ── Skip queue checks if already recording (watcher handles death) ─
+        #     StreamCapQT pattern: once ffmpeg confirms live, let ffmpeg's
+        #     process watcher detect the end — no need to keep polling.
+        if snapshot.is_live:
+            should_check = False
+        else:
+            should_check = (
+                snapshot.next_check_at is None
+                or snapshot.next_check_at <= now
+            )
 
         # ── Gather prediction context ────────────────────────────
         sessions = self._session_repo.list_by_target(target.id)

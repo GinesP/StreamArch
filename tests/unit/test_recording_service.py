@@ -218,11 +218,12 @@ class TestStartRecording:
         with patch("app.application.services.recording_service.utc_now", return_value=NOW):
             service.start_recording("t1", "https://example.com/stream.m3u8")
 
-        runner.start_recording.assert_called_once_with(
-            stream_url="https://example.com/stream.m3u8",
-            output_path=str(file_manager.allocate_path.return_value),
-            headers=None,
-        )
+        runner.start_recording.assert_called_once()
+        args, kwargs = runner.start_recording.call_args
+        assert kwargs["stream_url"] == "https://example.com/stream.m3u8"
+        assert kwargs["output_path"] == str(file_manager.allocate_path.return_value)
+        assert kwargs["headers"] is None
+        assert kwargs["on_exit"] is not None
 
     def test_creates_raw_ts_artifact(
         self, service: RecordingService, artifact_repo: MagicMock

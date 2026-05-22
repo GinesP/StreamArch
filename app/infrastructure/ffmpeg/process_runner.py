@@ -57,9 +57,12 @@ import subprocess
 import threading
 import uuid
 from collections import deque
-from typing import Any
+from typing import Any, Callable
 
 from app.infrastructure.ffmpeg.progress_parser import FFmpegProgress, parse_progress_line
+
+_OnExitCallback = Callable[[str], None]
+"""Callback(recording_id) invoked when ffmpeg exits unexpectedly."""
 from app.infrastructure.ffmpeg.shutdown import stop_ffmpeg_gracefully
 from app.infrastructure.ffmpeg.transmuxer import transmux_to_mp4
 
@@ -98,16 +101,22 @@ class _RecordingProcessInfo:
         process: subprocess.Popen,
         output_path: str,
         stream_url: str,
+        on_exit: _OnExitCallback | None = None,
     ) -> None:
         self.recording_id = recording_id
         self.process = process
         self.output_path = output_path
         self.stream_url = stream_url
+        self._on_exit = on_exit
 
         # Stderr ring buffer (thread-safe via deque)
         self._stderr_buffer: deque[str] = deque(maxlen=_STDERR_MAX_LINES)
         self._reader_stop = threading.Event()
         self._reader_thread: threading.Thread | None = None
+
+        # Watcher thread — detects unexpected ffmpeg exit
+        self._watcher_stop = threading.Event()
+        self._watcher_thread: threading.Thread | None = None
 
     # ── Stderr reader ──────────────────────────────────────────────
 
@@ -126,6 +135,40 @@ class _RecordingProcessInfo:
         self._reader_stop.set()
         if self._reader_thread is not None and self._reader_thread.is_alive():
             self._reader_thread.join(timeout=2.0)
+
+    # ── Watcher thread ───────────────────────────────────────────
+
+    def start_watcher(self) -> None:
+        """Start a daemon thread that watches for unexpected ffmpeg exit.
+
+        Checks ``process.poll()`` every 2 s.  If the process exited
+        (and was not deliberately stopped via :meth:`stop_recording`),
+        calls the ``on_exit`` callback so the recording session can
+        be closed and remuxed promptly.
+        """
+        self._watcher_stop.clear()
+        self._watcher_thread = threading.Thread(
+            target=self._watch_process,
+            name=f"ffmpeg-watch-{self.recording_id[:8]}",
+            daemon=True,
+        )
+        self._watcher_thread.start()
+
+    def stop_watcher(self) -> None:
+        """Signal the watcher thread to stop and wait for it."""
+        self._watcher_stop.set()
+        if self._watcher_thread is not None and self._watcher_thread.is_alive():
+            self._watcher_thread.join(timeout=3.0)
+
+    def _watch_process(self) -> None:
+        """Poll the ffmpeg process every 2 s; fire callback on unexpected exit."""
+        while not self._watcher_stop.is_set():
+            if self.process.poll() is not None:
+                # ffmpeg exited unexpectedly — notify the orchestrator
+                if self._on_exit is not None:
+                    self._on_exit(self.recording_id)
+                break
+            self._watcher_stop.wait(timeout=2.0)
 
     @property
     def stderr_lines(self) -> list[str]:
@@ -170,6 +213,7 @@ class FFmpegRunner:
         stream_url: str,
         output_path: str,
         headers: dict[str, str] | None = None,
+        on_exit: _OnExitCallback | None = None,
     ) -> str:
         """Start recording *stream_url* to *output_path*.
 
@@ -179,6 +223,10 @@ class FFmpegRunner:
         The ffmpeg command mirrors StreamCapQT's proven base profile
         (see module docstring for the full flag listing).
 
+        A watcher thread monitors the ffmpeg process.  If ffmpeg exits
+        unexpectedly (stream ended), the *on_exit* callback is invoked
+        so the recording session can be closed and remuxed promptly.
+
         Args:
             stream_url: The resolved stream URL to record (m3u8 or
                         direct media URL).
@@ -186,6 +234,8 @@ class FFmpegRunner:
             headers: Optional HTTP headers to pass to ffmpeg (e.g.
                      ``{"Cookie": "..."}`` for platforms that require
                      authentication).
+            on_exit: Optional callback invoked with ``recording_id``
+                     when the ffmpeg process exits unexpectedly.
 
         Returns:
             A unique recording ID string.  Pass this to
@@ -268,8 +318,10 @@ class FFmpegRunner:
             process=process,
             output_path=output_path,
             stream_url=stream_url,
+            on_exit=on_exit,
         )
         info.start_reader()
+        info.start_watcher()
 
         with self._lock:
             self._recordings[recording_id] = info
@@ -302,6 +354,7 @@ class FFmpegRunner:
             logger.debug("Recording %s not found (already stopped?)", recording_id[:8])
             return
 
+        info.stop_watcher()
         self._stop_one(info, timeout=timeout, transmux=transmux)
 
     # ── Query ──────────────────────────────────────────────────────

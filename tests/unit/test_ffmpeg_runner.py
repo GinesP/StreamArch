@@ -4,6 +4,7 @@ All tests mock ``subprocess.Popen`` and ``os.path.isfile`` to avoid
 depending on ffmpeg being installed.
 """
 
+import itertools
 import os
 import subprocess
 import threading
@@ -398,9 +399,11 @@ class TestFFmpegRunnerStop:
         """Stopping an already-stopped recording is a no-op."""
         with patch("app.infrastructure.ffmpeg.process_runner.subprocess.Popen") as mock_popen:
             proc = _mock_process()
-            # poll is called twice during stop: once in _stop_one to check
-            # if running, once in stop_ffmpeg_gracefully to check again.
-            proc.poll.side_effect = [None, None, 0, 0]
+            # poll returns None (running) for unlimited calls (watcher thread
+            # also calls poll every 2s); 0 is for the 2 calls in stop() path.
+            proc.poll.side_effect = itertools.chain(
+                itertools.repeat(None), [0, 0]
+            )
             mock_popen.return_value = proc
             runner = FFmpegRunner()
             rid = runner.start_recording("url", "/data/test.ts")
