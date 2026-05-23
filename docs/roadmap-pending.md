@@ -37,10 +37,10 @@ El núcleo completo de StreamArch está implementado y verificado con un stream 
 - [x] **Worker staggering y logs de check** — workers tienen delay aleatorio 0-3s antes de check (evita patrones regulares). Logs informativos por stream: "Checking X" y "Stream X is LIVE/offline". Se eliminaron logs ruidosos de "Skipped".
 - [x] **UI: desconexión del core** — cuando el core está desconectado, muestra "Core disconnected" en rojo y deshabilita "Add Stream" (no se puede añadir streams sin backend).
 - [x] **Workers adaptativos con boost móvil** — diseño completado en `docs/scheduler-redesign-v2.md`. Pendiente de implementación (Fase 1).
-- [ ] **Scheduler redesign v2 (implementación Fase 1)** — workers adaptativos: scale-up por thresholds, reasignación de boost a cola 2× más congestionada, scale-down tras 60s vacía.
-- [ ] **Scheduler redesign v2 (implementación Fase 2)** — ciclo de 180s con ordenación por priority_score.
-- [ ] **Scheduler redesign v2 (implementación Fase 3)** — frontend: mostrar workers/busy por banda.
-- [ ] **Scheduler redesign v2 (implementación Fase 4)** — predicción enriquecida con ventanas de emisión (HistoryManager).
+- [x] **Scheduler redesign v2 (implementación Fase 1)** — workers adaptativos: scale-up por thresholds, reasignación de boost a cola 2× más congestionada, scale-down tras 60s vacía.
+- [x] **Scheduler redesign v2 (implementación Fase 2)** — ciclo de 180s con ordenación por priority_score.
+- [x] **Scheduler redesign v2 (implementación Fase 3)** — frontend: workers por banda en dashboard.
+- [x] **Scheduler redesign v2 (implementación Fase 4)** — predicción enriquecida: hourly_pattern, session_pattern, deep sleep, ventanas de emisión.
 - [ ] **Resolvedor Twitch funcional** — implementar StreamlinkResolver de verdad usando streamget.TwitchLiveStream, siguiendo el mismo patrón que TikTok.
 - [ ] **Resolvedor YouTube funcional** — implementar YtDlpResolver usando yt-dlp o streamget.YouTubeLiveStream.
 - [ ] **DELETE /api/v1/streams/{id}** — endpoint para eliminar stream con opción de limpiar grabaciones asociadas.
