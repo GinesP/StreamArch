@@ -309,11 +309,15 @@ class TestPredictedWindow:
             period_days=30,
             _now=NOW,
         )
-        # Expect FAST band (60s) when likelihood >= 0.9
+        # Expect FAST band (~60s, with jitter ±15%) when likelihood >= 0.9
         assert result.likelihood >= 0.9
         assert result.predicted_window_end is not None
         duration = (result.predicted_window_end - result.predicted_window_start).total_seconds()
-        assert duration == FAST_BAND_INTERVAL
+        fast_min = int(FAST_BAND_INTERVAL * 0.85)
+        fast_max = int(FAST_BAND_INTERVAL * 1.15)
+        assert fast_min <= duration <= fast_max, (
+            f"Expected duration in [{fast_min}, {fast_max}], got {duration}"
+        )
 
     def test_slow_target_has_slow_window(self) -> None:
         """A cold-ish target gets a longer window."""
@@ -331,8 +335,12 @@ class TestPredictedWindow:
             duration = (
                 result.predicted_window_end - result.predicted_window_start
             ).total_seconds()
-            # Likelihood around baseline → SLOW band
-            assert duration == SLOW_BAND_INTERVAL or duration == MEDIUM_BAND_INTERVAL
+            # Likelihood around baseline → SLOW band (with jitter ±15%)
+            slow_min = int(SLOW_BAND_INTERVAL * 0.85)
+            slow_max = int(SLOW_BAND_INTERVAL * 1.15)
+            assert slow_min <= duration <= slow_max, (
+                f"Expected duration in [{slow_min}, {slow_max}], got {duration}"
+            )
 
     def test_next_slot_at_is_now_for_active_targets(self) -> None:
         """Active predictions should have next_slot_at set to now."""

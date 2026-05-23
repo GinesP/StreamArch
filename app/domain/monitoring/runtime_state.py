@@ -1,6 +1,6 @@
 """Minimal in-memory runtime state for one monitored stream target."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 
 
@@ -16,3 +16,5 @@ class MonitoringRuntimeState:
     active_recording_session_id: str | None
     previous_likelihood: float
     updated_at: datetime
+    last_checked_count: int = 0
+    """Number of live checks performed since the target was added."""

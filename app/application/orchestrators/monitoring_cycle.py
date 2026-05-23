@@ -35,8 +35,7 @@ from app.domain.monitoring.states import MonitoringState
 from app.domain.prediction.engine import PredictionEngine
 from app.domain.prediction.results import PredictionResult
 from app.domain.prediction.policy import (
-    apply_jitter,
-    get_interval_seconds,
+    get_adjusted_interval,
     get_queue_band,
 )
 from app.domain.shared.types import Confidence, QueueBand, UiState, utc_now
@@ -493,6 +492,7 @@ class MonitoringCycle:
         sessions = self._session_repo.list_by_target(target.id)
         session_count = len(sessions)
         previous_priority = runtime_state.previous_likelihood
+        live_check_count = runtime_state.last_checked_count
 
         # ── Compute prediction (uses current snapshot) ───────────
         result = self._prediction_engine.predict(
@@ -500,13 +500,20 @@ class MonitoringCycle:
             snapshot=snapshot,
             previous_priority=previous_priority,
             session_count=session_count,
+            sessions=sessions,
+            live_check_count=live_check_count,
             period_days=self._period_days,
             _now=now,
         )
 
         # ── Determine interval and queue band ──────────────────
-        interval = get_interval_seconds(result.likelihood, target.favorite)
-        jittered = apply_jitter(interval)
+        jittered = get_adjusted_interval(
+            result.likelihood,
+            previous_priority,
+            target.favorite,
+            live_check_count=live_check_count,
+        )
+        # Note: get_adjusted_interval already applies jitter internally.
         queue_band = get_queue_band(result.likelihood, target.favorite)
 
         # ── Determine next check time ──────────────────────────
@@ -568,18 +575,24 @@ class MonitoringCycle:
             likelihood = 0.0
             last_live_at = runtime_state.last_live_at
 
-        interval = get_interval_seconds(likelihood, target.favorite)
-        jittered = apply_jitter(interval)
+        interval = get_adjusted_interval(
+            likelihood,
+            runtime_state.previous_likelihood,
+            target.favorite,
+            live_check_count=runtime_state.last_checked_count,
+        )
+        # Note: get_adjusted_interval already applies jitter internally.
 
         return MonitoringRuntimeState(
             stream_target_id=runtime_state.stream_target_id,
-            next_check_at=now + timedelta(seconds=jittered),
+            next_check_at=now + timedelta(seconds=interval),
             last_checked_at=now,
             last_live_at=last_live_at,
             is_live=result.is_live,
             active_recording_session_id=runtime_state.active_recording_session_id,
             previous_likelihood=likelihood,
             updated_at=now,
+            last_checked_count=runtime_state.last_checked_count + 1,
         )
 
     # ── Runtime-state helpers ────────────────────────────────────────

@@ -21,10 +21,12 @@ from app.domain.prediction.features import (
     LIKELIHOOD_MEDIUM_THRESHOLD,
     calculate_consistency,
     calculate_ema,
+    calculate_hourly_pattern,
     calculate_likelihood,
     calculate_recency_factor,
+    calculate_session_pattern,
 )
-from app.domain.prediction.policy import get_interval_seconds
+from app.domain.prediction.policy import get_adjusted_interval, get_interval_seconds
 from app.domain.prediction.results import PredictionResult
 
 # ── Confidence thresholds ───────────────────────────────────────────
@@ -41,8 +43,8 @@ class PredictionEngine:
 
     Responsibilities
     ----------------
-    * Combine EMA, recency, consistency, and favourite bias into a
-      unified likelihood score.
+    * Combine EMA, recency, consistency, hourly pattern, session
+      pattern, and favourite bias into a unified likelihood score.
     * Map the score to a ``Confidence`` level, ``UiState``, and check
       interval.
     * Generate human-readable reasons for every decision.
@@ -54,6 +56,8 @@ class PredictionEngine:
         snapshot: MonitoringSnapshot,
         previous_priority: float = 0.0,
         session_count: int = 0,
+        sessions: list | None = None,
+        live_check_count: int = 0,
         period_days: float = 30.0,
         *,
         _now: datetime | None = None,
@@ -71,6 +75,12 @@ class PredictionEngine:
             targets with no history.
         session_count
             Number of known recording sessions in the observation window.
+        sessions
+            Full list of recording sessions (used for hourly/session
+            pattern analysis).
+        live_check_count
+            Number of times this target has been checked (used for
+            deep-sleep detection).
         period_days
             Length of the observation window in days.
         _now
@@ -85,6 +95,7 @@ class PredictionEngine:
         """
         now = _now or utc_now()
         reasons: list[str] = []
+        sessions_list = sessions or []
 
         # ── Disabled target ──────────────────────────────────────────
         if not stream_target.enabled:
@@ -115,9 +126,13 @@ class PredictionEngine:
         ema = calculate_ema(previous_priority, is_live=False, is_recording=is_recording)
         recency = calculate_recency_factor(snapshot.last_live_at, now)
         consistency = calculate_consistency(session_count, period_days)
+        hourly = calculate_hourly_pattern(sessions_list, now)
+        session_pat = calculate_session_pattern(sessions_list, now)
 
         likelihood = calculate_likelihood(
-            ema, recency, consistency, stream_target.favorite
+            ema, recency, consistency, stream_target.favorite,
+            hourly_pattern=hourly,
+            session_pattern=session_pat,
         )
 
         # ── Reasons ──────────────────────────────────────────────────
@@ -135,8 +150,13 @@ class PredictionEngine:
             likelihood, stream_target.enabled, snapshot.is_live
         )
 
-        # ── Predicted window & next slot ─────────────────────────────
-        interval = get_interval_seconds(likelihood, stream_target.favorite)
+        # ── Interval & predicted window ──────────────────────────────
+        interval = get_adjusted_interval(
+            likelihood,
+            previous_priority,
+            stream_target.favorite,
+            live_check_count=live_check_count,
+        )
 
         if likelihood >= BASELINE_MINIMUM:
             predicted_window_start = now
