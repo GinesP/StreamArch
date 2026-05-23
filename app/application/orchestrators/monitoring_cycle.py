@@ -1,8 +1,8 @@
-"""MonitoringCycle — runs in a background thread, periodically evaluating
+"""MonitoringCycle - runs in a background thread, periodically evaluating
 all enabled stream targets, computing predictions, and enqueuing due
 live checks to the priority queue system.
 
-Minimal runtime state lives in memory only — it is reconstructed on
+Minimal runtime state lives in memory only - it is reconstructed on
 startup from :class:`RecordingSession` data and updated by each cycle.
 Rich ``MonitoringSnapshot`` values are derived on demand for queries and
 event payloads. This avoids stale-state bugs caused by persisted
@@ -22,7 +22,6 @@ Flow per cycle
 """
 
 import logging
-import random
 import threading
 from datetime import datetime, timedelta
 
@@ -160,32 +159,27 @@ class MonitoringCycle:
         """Load all targets and build initial in-memory runtime state.
 
         **Important**: Startup NEVER restores ``RECORDING`` state from
-        persisted sessions — after a restart the ffmpeg process is gone.
+        persisted sessions - after a restart the ffmpeg process is gone.
         Runtime state always starts as idle, preserving only historical
         signal (``last_live_at``).  The first fresh live check will
         transition the derived snapshot to ``RECORDING`` normally.
-
-        All targets are set to a jittered ``next_check_at`` within the
-        next 10 seconds so the first cycle queues them quickly but not
-        all at the exact same instant.  Semaphores and the small worker
-        pool regulate actual concurrency.
         """
+        # All targets start with next_check_at=now so the first cycle
+        # queues them immediately.  Worker stagger (0.5-3s) and platform
+        # semaphores regulate actual concurrency - no artificial delay
+        # is needed, especially with a 180s cycle interval.
         targets = self._target_repo.list_all()
         now = utc_now()
 
         for target in targets:
-            # Preserve historical live timestamp if available — but
+            # Preserve historical live timestamp if available - but
             # do NOT assume a live stream is ongoing after restart.
             sessions = self._session_repo.list_by_target(target.id)
             last_live = sessions[0].started_at if sessions else None
 
-            # Light jitter (0–10 s) so N targets don't all have the
-            # exact same next_check_at on startup.
-            first_deadline = now + timedelta(seconds=random.randint(0, 10))
-
             self._runtime_states[target.id] = MonitoringRuntimeState(
                 stream_target_id=target.id,
-                next_check_at=first_deadline,
+                next_check_at=now,
                 last_checked_at=None,
                 last_live_at=last_live,
                 is_live=False,
@@ -199,7 +193,7 @@ class MonitoringCycle:
             self._last_known_live[target.id] = False
 
         self._logger.info(
-            "Built %d initial in-memory runtime states; first checks spread over 0–10 s",
+            "Built %d initial in-memory runtime states; first check queued immediately",
             len(self._runtime_states),
         )
 
@@ -264,24 +258,24 @@ class MonitoringCycle:
     # ── Internal loop ─────────────────────────────────────────────────
 
     def _run_loop(self) -> None:
-        """Main loop body — runs until ``stop()`` is signalled."""
+        """Main loop body -- runs until ``stop()`` is signalled."""
         while not self._stop_event.is_set():
             try:
                 self._run_one_cycle()
             except Exception:
                 self._logger.exception(
-                    "Unhandled error in monitoring cycle — continuing",
+                    "Unhandled error in monitoring cycle - continuing",
                 )
             self._stop_event.wait(timeout=self._loop_interval)
 
     def _run_one_cycle(self) -> None:
         """Evaluate every enabled stream target once.
 
-        Phase A — Process & Predict
+        Phase A - Process & Predict
             For each enabled target: load/create runtime state,
             compute prediction, update snapshot, enqueue if due.
 
-        Phase B — Detect & React
+        Phase B - Detect & React
             Consume ``ResolveResult`` entries from worker threads,
             apply them to runtime state, detect state transitions,
             emit events via the ``EventBus``, and start/stop recordings.
@@ -356,7 +350,7 @@ class MonitoringCycle:
                         runtime_state.active_recording_session_id,
                     )
                     if session is None or not session.is_active:
-                        # Recording was stopped externally — reset
+                        # Recording was stopped externally - reset
                         runtime_state = self._clear_recording_state(runtime_state, now)
                         self._runtime_states[target.id] = runtime_state
 
@@ -446,7 +440,7 @@ class MonitoringCycle:
     # ── Due validation (called from WorkerPool) ────────────────────────
 
     def is_stream_due(self, stream_id: str) -> bool:
-        """Lightweight memory check — should this dequeued item be processed?
+        """Lightweight memory check - should this dequeued item be processed?
 
         A stream is considered *still due* unless it was checked very
         recently by another worker.  This prevents redundant work when an
@@ -530,12 +524,12 @@ class MonitoringCycle:
                 self._cycle_enqueued.get(queue_band, 0) + 1
             )
             self._logger.info(
-                "Dispatched %s (%s) to queue %s — next check at %s",
+                "Dispatched %s (%s) to queue %s - next check at %s",
                 target.id, target.handle, queue_band.value, next_check_at,
             )
         else:
             next_check_at = runtime_state.next_check_at
-            # Skip is the common case — no need to log it.
+            # Skip is the common case - no need to log it.
 
         # ── Update in-memory runtime state ───────────────────────
         updated = MonitoringRuntimeState(
