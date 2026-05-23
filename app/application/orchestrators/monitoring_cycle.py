@@ -22,6 +22,7 @@ Flow per cycle
 """
 
 import logging
+import random
 import threading
 from datetime import datetime, timedelta
 
@@ -164,9 +165,10 @@ class MonitoringCycle:
         signal (``last_live_at``).  The first fresh live check will
         transition the derived snapshot to ``RECORDING`` normally.
 
-        All targets are set to ``next_check_at=now`` so the first cycle
-        queues them immediately.  Semaphores and the small worker pool
-        regulate actual concurrency — no artificial stagger is needed.
+        All targets are set to a jittered ``next_check_at`` within the
+        next 10 seconds so the first cycle queues them quickly but not
+        all at the exact same instant.  Semaphores and the small worker
+        pool regulate actual concurrency.
         """
         targets = self._target_repo.list_all()
         now = utc_now()
@@ -177,9 +179,13 @@ class MonitoringCycle:
             sessions = self._session_repo.list_by_target(target.id)
             last_live = sessions[0].started_at if sessions else None
 
+            # Light jitter (0–10 s) so N targets don't all have the
+            # exact same next_check_at on startup.
+            first_deadline = now + timedelta(seconds=random.randint(0, 10))
+
             self._runtime_states[target.id] = MonitoringRuntimeState(
                 stream_target_id=target.id,
-                next_check_at=now,
+                next_check_at=first_deadline,
                 last_checked_at=None,
                 last_live_at=last_live,
                 is_live=False,
@@ -193,7 +199,7 @@ class MonitoringCycle:
             self._last_known_live[target.id] = False
 
         self._logger.info(
-            "Built %d initial in-memory runtime states; first check queued immediately",
+            "Built %d initial in-memory runtime states; first checks spread over 0–10 s",
             len(self._runtime_states),
         )
 
