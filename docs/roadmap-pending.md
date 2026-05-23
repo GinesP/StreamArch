@@ -24,7 +24,9 @@ El núcleo completo de StreamArch está implementado y verificado con un stream 
 - Naming de archivos: {canal}_{titulo}_{fecha}_{hora}.ext
 - Configuración de grabación heredable (global → stream override)
 - Segmentación por tiempo opcional (configurable)
-- Test suite: 430 tests pasando
+- Test suite: 449 tests pasando
+- Diseño de scheduler v2 completado en `docs/scheduler-redesign-v2.md`
+- Referencia principal de comportamiento: `StreamCapOrigin/app/core/recording/record_manager.py`
 
 ## Tareas pendientes
 
@@ -32,6 +34,13 @@ El núcleo completo de StreamArch está implementado y verificado con un stream 
 
 - [x] **Simplificar scheduler y eliminar MonitoringSnapshot rico** — el scheduler ahora conserva un estado operativo mínimo en memoria y deriva `MonitoringSnapshot` al vuelo para queries/UI/eventos. Objetivo: acercar la arquitectura al modelo simple de StreamCapQT y reducir inconsistencias entre estado, cola, likelihood y timing.
 - [x] **Métricas de ciclo en dashboard** — worker valida "due" antes de checkear (evita checks redundantes), emite eventos `queue.cycle_stats` con contadores de enqueued/waiting por banda, sparkline de dispatched por ciclo en la UI. UI normalizada a inglés (F/M/S = Fast/Medium/Slow).
+- [x] **Worker staggering y logs de check** — workers tienen delay aleatorio 0-3s antes de check (evita patrones regulares). Logs informativos por stream: "Checking X" y "Stream X is LIVE/offline". Se eliminaron logs ruidosos de "Skipped".
+- [x] **UI: desconexión del core** — cuando el core está desconectado, muestra "Core disconnected" en rojo y deshabilita "Add Stream" (no se puede añadir streams sin backend).
+- [x] **Workers adaptativos con boost móvil** — diseño completado en `docs/scheduler-redesign-v2.md`. Pendiente de implementación (Fase 1).
+- [ ] **Scheduler redesign v2 (implementación Fase 1)** — workers adaptativos: scale-up por thresholds, reasignación de boost a cola 2× más congestionada, scale-down tras 60s vacía.
+- [ ] **Scheduler redesign v2 (implementación Fase 2)** — ciclo de 180s con ordenación por priority_score.
+- [ ] **Scheduler redesign v2 (implementación Fase 3)** — frontend: mostrar workers/busy por banda.
+- [ ] **Scheduler redesign v2 (implementación Fase 4)** — predicción enriquecida con ventanas de emisión (HistoryManager).
 - [ ] **Resolvedor Twitch funcional** — implementar StreamlinkResolver de verdad usando streamget.TwitchLiveStream, siguiendo el mismo patrón que TikTok.
 - [ ] **Resolvedor YouTube funcional** — implementar YtDlpResolver usando yt-dlp o streamget.YouTubeLiveStream.
 - [ ] **DELETE /api/v1/streams/{id}** — endpoint para eliminar stream con opción de limpiar grabaciones asociadas.
