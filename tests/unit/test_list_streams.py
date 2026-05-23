@@ -1,5 +1,7 @@
 """Tests for ListStreamsHandler."""
 
+from unittest.mock import MagicMock
+
 import pytest
 
 from app.application.dto.streams import StreamOverviewDTO
@@ -11,9 +13,6 @@ from app.domain.stream_target.entities import StreamTarget
 from app.domain.stream_target.value_objects import ScheduleMode
 from app.infrastructure.db.connection import get_connection
 from app.infrastructure.db.migrations import apply_migrations
-from app.infrastructure.repositories.monitoring_snapshot_repository import (
-    MonitoringSnapshotRepository,
-)
 from app.infrastructure.repositories.stream_target_repository import (
     StreamTargetRepository,
 )
@@ -39,10 +38,10 @@ def _insert_target(repo: StreamTargetRepository, **overrides) -> str:
     return target.id
 
 
-def _insert_snapshot(repo: MonitoringSnapshotRepository, **overrides) -> None:
+def _make_snapshot(**overrides) -> MonitoringSnapshot:
     now = utc_now()
-    snapshot = MonitoringSnapshot(
-        stream_target_id=overrides["stream_target_id"],
+    return MonitoringSnapshot(
+        stream_target_id=overrides.get("stream_target_id", "unknown"),
         state=overrides.get("state", MonitoringState.IDLE),
         queue_band=overrides.get("queue_band", None),
         current_likelihood=overrides.get("current_likelihood", 0.0),
@@ -55,7 +54,6 @@ def _insert_snapshot(repo: MonitoringSnapshotRepository, **overrides) -> None:
         last_error_message=overrides.get("last_error_message", None),
         updated_at=overrides.get("updated_at", now),
     )
-    repo.save(snapshot)
 
 
 @pytest.fixture
@@ -70,10 +68,17 @@ def db_path(tmp_path) -> str:
 
 
 @pytest.fixture
-def handler(db_path) -> ListStreamsHandler:
+def target_repo(db_path) -> StreamTargetRepository:
+    return StreamTargetRepository(db_path)
+
+
+@pytest.fixture
+def handler(target_repo) -> ListStreamsHandler:
+    monitoring_cycle = MagicMock()
+    monitoring_cycle.get_all_snapshots.return_value = []
     return ListStreamsHandler(
-        stream_target_repo=StreamTargetRepository(db_path),
-        monitoring_snapshot_repo=MonitoringSnapshotRepository(db_path),
+        stream_target_repo=target_repo,
+        monitoring_cycle=monitoring_cycle,
     )
 
 
@@ -82,8 +87,7 @@ class TestListStreamsHandler:
         result = handler.handle(ListStreamsQuery())
         assert result == []
 
-    def test_returns_all_targets(self, handler) -> None:
-        target_repo = handler._target_repo
+    def test_returns_all_targets(self, handler, target_repo) -> None:
         _insert_target(target_repo, id="t1", handle="alpha", display_name="Alpha")
         _insert_target(target_repo, id="t2", handle="beta", display_name="Beta")
         _insert_target(target_repo, id="t3", handle="gamma", display_name="Gamma")
@@ -91,18 +95,16 @@ class TestListStreamsHandler:
         result = handler.handle(ListStreamsQuery())
         assert len(result) == 3
 
-    def test_merges_snapshot_state(self, handler) -> None:
-        target_repo = handler._target_repo
-        snapshot_repo = handler._snapshot_repo
-
+    def test_merges_snapshot_state(self, handler, target_repo) -> None:
         tid = _insert_target(target_repo, id="t1", handle="live_streamer")
-        _insert_snapshot(
-            snapshot_repo,
-            stream_target_id=tid,
-            state=MonitoringState.RECORDING,
-            current_likelihood=0.95,
-            current_confidence=Confidence.HIGH,
-        )
+        handler._monitoring_cycle.get_all_snapshots.return_value = [
+            _make_snapshot(
+                stream_target_id=tid,
+                state=MonitoringState.RECORDING,
+                current_likelihood=0.95,
+                current_confidence=Confidence.HIGH,
+            ),
+        ]
 
         result = handler.handle(ListStreamsQuery())
         assert len(result) == 1
@@ -111,8 +113,7 @@ class TestListStreamsHandler:
         assert dto.current_likelihood == 0.95
         assert dto.current_confidence == "high"
 
-    def test_returns_unknown_state_when_no_snapshot(self, handler) -> None:
-        target_repo = handler._target_repo
+    def test_returns_unknown_state_when_no_snapshot(self, handler, target_repo) -> None:
         _insert_target(target_repo, id="t1", handle="new_streamer")
 
         result = handler.handle(ListStreamsQuery())
@@ -120,10 +121,7 @@ class TestListStreamsHandler:
         assert result[0].current_likelihood == 0.0
         assert result[0].current_confidence == "low"
 
-    def test_preserves_target_fields(self, handler) -> None:
-        target_repo = handler._target_repo
-        snapshot_repo = handler._snapshot_repo
-
+    def test_preserves_target_fields(self, handler, target_repo) -> None:
         tid = _insert_target(
             target_repo,
             id="t1",
@@ -134,10 +132,9 @@ class TestListStreamsHandler:
             favorite=True,
             source_url="https://youtube.com/@my_handle",
         )
-        _insert_snapshot(
-            snapshot_repo,
-            stream_target_id=tid,
-        )
+        handler._monitoring_cycle.get_all_snapshots.return_value = [
+            _make_snapshot(stream_target_id=tid),
+        ]
 
         dto = handler.handle(ListStreamsQuery())[0]
         assert dto.id == "t1"

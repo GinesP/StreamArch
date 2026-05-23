@@ -16,7 +16,6 @@ Flow
             → starts FFmpegRunner
             → creates RecordingArtifact (status=WRITING, RAW_TS)
             → saves session & artifact
-            → updates snapshot with session id
             → emits RecordingStarted event
 
 **Stop**::
@@ -27,14 +26,12 @@ Flow
             → updates RAW_TS artifact (READY)
             → creates FINAL_MP4 artifact
             → closes RecordingSession (COMPLETED)
-            → updates snapshot (clears session id & stream url)
             → emits RecordingFinished event
 """
 
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
 
 from app.domain.events.events import (
     LiveDetected,
@@ -58,9 +55,6 @@ from app.application.services.cookie_service import CookieService
 from app.infrastructure.events.event_bus import EventBus
 from app.infrastructure.ffmpeg.process_runner import FFmpegRunner
 from app.infrastructure.files.file_manager import FileManager
-from app.infrastructure.repositories.monitoring_snapshot_repository import (
-    MonitoringSnapshotRepository,
-)
 from app.infrastructure.repositories.recording_artifact_repository import (
     RecordingArtifactRepository,
 )
@@ -89,9 +83,6 @@ class RecordingService:
         Repository for ``RecordingArtifact`` entities.
     target_repo:
         Repository for ``StreamTarget`` entities.
-    snapshot_repo:
-        Repository for ``MonitoringSnapshot`` summaries (used to update
-        ``current_recording_session_id`` and ``resolved_stream_url``).
     event_bus:
         Optional event bus for emitting domain events.
     cookie_service:
@@ -108,7 +99,6 @@ class RecordingService:
         session_repo: RecordingSessionRepository,
         artifact_repo: RecordingArtifactRepository,
         target_repo: StreamTargetRepository,
-        snapshot_repo: MonitoringSnapshotRepository,
         event_bus: EventBus | None = None,
         cookie_service: CookieService | None = None,
         recording_config: RecordingConfig | None = None,
@@ -118,7 +108,6 @@ class RecordingService:
         self._session_repo = session_repo
         self._artifact_repo = artifact_repo
         self._target_repo = target_repo
-        self._snapshot_repo = snapshot_repo
         self._event_bus = event_bus
         self._cookie_service = cookie_service
         self._recording_config = recording_config or RecordingConfig()
@@ -216,9 +205,6 @@ class RecordingService:
             updated_at=now,
         )
         self._artifact_repo.save(artifact)
-
-        # ── Update snapshot with session id ───────────────────────
-        self._update_snapshot_recording(stream_target_id, session_id, stream_url)
 
         # ── Emit event ────────────────────────────────────────────
         self._emit(
@@ -334,9 +320,6 @@ class RecordingService:
         except ValueError as exc:
             logger.error("Failed to complete session %s: %s", session.id[:8], exc)
 
-        # ── Update snapshot ───────────────────────────────────────
-        self._clear_snapshot_recording(session.stream_target_id)
-
         # ── Emit event ────────────────────────────────────────────
         self._emit(
             "recording.finished",
@@ -357,41 +340,6 @@ class RecordingService:
         """Stop every active recording and finalise all sessions."""
         self._runner.stop_all()
         self._session_to_recording.clear()
-
-    # ── Snapshot helpers ───────────────────────────────────────────
-
-    def _update_snapshot_recording(
-        self,
-        stream_target_id: str,
-        session_id: str,
-        stream_url: str,
-    ) -> None:
-        """Set the snapshot's current_recording_session_id and stream_url."""
-        snapshot = self._snapshot_repo.get(stream_target_id)
-        if snapshot is None:
-            return
-        snap_kwargs: dict[str, Any] = {
-            f.name: getattr(snapshot, f.name)
-            for f in snapshot.__dataclass_fields__.values()
-        }
-        snap_kwargs["current_recording_session_id"] = session_id
-        snap_kwargs["resolved_stream_url"] = stream_url
-        snap_kwargs["updated_at"] = utc_now()
-        self._snapshot_repo.save(snapshot.__class__(**snap_kwargs))
-
-    def _clear_snapshot_recording(self, stream_target_id: str) -> None:
-        """Clear the snapshot's recording-related fields."""
-        snapshot = self._snapshot_repo.get(stream_target_id)
-        if snapshot is None:
-            return
-        snap_kwargs: dict[str, Any] = {
-            f.name: getattr(snapshot, f.name)
-            for f in snapshot.__dataclass_fields__.values()
-        }
-        snap_kwargs["current_recording_session_id"] = None
-        snap_kwargs["resolved_stream_url"] = None
-        snap_kwargs["updated_at"] = utc_now()
-        self._snapshot_repo.save(snapshot.__class__(**snap_kwargs))
 
     # ── Event emission ────────────────────────────────────────────
 

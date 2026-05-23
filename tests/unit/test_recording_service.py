@@ -3,6 +3,10 @@ recording with session and artifact lifecycle.
 
 All external dependencies (runner, file manager, repos, event bus) are
 mocked so these tests are fast and deterministic.
+
+Snapshots are no longer managed by RecordingService — the monitoring
+cycle owns in-memory snapshots.  This test only verifies the recording
+lifecycle (sessions, artifacts, ffmpeg, events).
 """
 
 from datetime import datetime, timezone
@@ -12,7 +16,6 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from app.application.services.recording_service import RecordingService
-from app.domain.monitoring.snapshot import MonitoringSnapshot
 from app.domain.recording.config import RecordingConfig
 from app.domain.shared.types import ArtifactType, ContainerFormat, Platform, utc_now
 from app.domain.stream_target.entities import StreamTarget
@@ -38,24 +41,6 @@ def _target(**overrides) -> StreamTarget:
         output_profile_id=overrides.get("output_profile_id", None),
         schedule_mode=overrides.get("schedule_mode", ScheduleMode.NONE),
         created_at=overrides.get("created_at", NOW),
-        updated_at=overrides.get("updated_at", NOW),
-    )
-
-
-def _snapshot(**overrides) -> MonitoringSnapshot:
-    return MonitoringSnapshot(
-        stream_target_id=overrides.get("stream_target_id", "t1"),
-        state=overrides.get("state", ...),  # Will be set by caller
-        queue_band=overrides.get("queue_band", None),
-        current_likelihood=overrides.get("current_likelihood", 0.5),
-        current_confidence=overrides.get("current_confidence", ...),
-        next_check_at=overrides.get("next_check_at", None),
-        last_checked_at=overrides.get("last_checked_at", None),
-        last_live_at=overrides.get("last_live_at", None),
-        current_recording_session_id=overrides.get("current_recording_session_id", None),
-        resolved_stream_url=overrides.get("resolved_stream_url", None),
-        last_error_code=overrides.get("last_error_code", None),
-        last_error_message=overrides.get("last_error_message", None),
         updated_at=overrides.get("updated_at", NOW),
     )
 
@@ -97,13 +82,6 @@ def target_repo() -> MagicMock:
 
 
 @pytest.fixture
-def snapshot_repo() -> MagicMock:
-    mock = MagicMock()
-    mock.get.return_value = _snapshot()
-    return mock
-
-
-@pytest.fixture
 def event_bus() -> MagicMock:
     return MagicMock()
 
@@ -115,7 +93,6 @@ def service(
     session_repo: MagicMock,
     artifact_repo: MagicMock,
     target_repo: MagicMock,
-    snapshot_repo: MagicMock,
     event_bus: MagicMock,
 ) -> RecordingService:
     return RecordingService(
@@ -124,7 +101,6 @@ def service(
         session_repo=session_repo,
         artifact_repo=artifact_repo,
         target_repo=target_repo,
-        snapshot_repo=snapshot_repo,
         event_bus=event_bus,
     )
 
@@ -143,7 +119,6 @@ def service_with_config(
     session_repo: MagicMock,
     artifact_repo: MagicMock,
     target_repo: MagicMock,
-    snapshot_repo: MagicMock,
     event_bus: MagicMock,
 ) -> RecordingService:
     return RecordingService(
@@ -152,7 +127,6 @@ def service_with_config(
         session_repo=session_repo,
         artifact_repo=artifact_repo,
         target_repo=target_repo,
-        snapshot_repo=snapshot_repo,
         event_bus=event_bus,
         recording_config=RecordingConfig(
             segment_enabled=False,
@@ -170,7 +144,6 @@ def service_with_cookies(
     session_repo: MagicMock,
     artifact_repo: MagicMock,
     target_repo: MagicMock,
-    snapshot_repo: MagicMock,
     event_bus: MagicMock,
     cookie_service: MagicMock,
 ) -> RecordingService:
@@ -180,7 +153,6 @@ def service_with_cookies(
         session_repo=session_repo,
         artifact_repo=artifact_repo,
         target_repo=target_repo,
-        snapshot_repo=snapshot_repo,
         event_bus=event_bus,
         cookie_service=cookie_service,
     )
@@ -237,19 +209,6 @@ class TestStartRecording:
         assert saved.artifact_type == ArtifactType.RAW_TS
         assert saved.container_format == ContainerFormat.TS
         assert saved.status.value == "writing"
-
-    def test_updates_snapshot(
-        self, service: RecordingService, snapshot_repo: MagicMock
-    ) -> None:
-        """The snapshot's recording_session_id and stream_url are set."""
-        with patch("app.application.services.recording_service.utc_now", return_value=NOW):
-            session_id = service.start_recording("t1", "https://example.com/stream.m3u8")
-
-        snapshot_repo.save.assert_called()
-        # Find the snapshot save that sets the recording fields
-        saved = snapshot_repo.save.call_args[0][0]
-        assert saved.current_recording_session_id == session_id
-        assert saved.resolved_stream_url == "https://example.com/stream.m3u8"
 
     def test_emits_events(
         self, service: RecordingService, event_bus: MagicMock
@@ -434,28 +393,6 @@ class TestStopRecording:
             if call[0][0] == "recording.finished"
         ]
         assert len(finished_events) >= 1
-
-    def test_clears_snapshot(
-        self,
-        service: RecordingService,
-        session_repo: MagicMock,
-        snapshot_repo: MagicMock,
-    ) -> None:
-        """The snapshot's recording fields are cleared after stopping."""
-        with patch("app.application.services.recording_service.utc_now", return_value=NOW):
-            session_id = service.start_recording("t1", "url")
-
-        session = session_repo.save.call_args[0][0]
-        session_repo.get.return_value = session
-
-        service.stop_recording(session_id)
-
-        # Find the snapshot save that clears the fields
-        snapshot_saves = snapshot_repo.save.call_args_list
-        # The last snapshot save should have cleared fields
-        last_snap = snapshot_saves[-1][0][0]
-        assert last_snap.current_recording_session_id is None
-        assert last_snap.resolved_stream_url is None
 
     def test_stop_unknown_session(
         self, service: RecordingService, session_repo: MagicMock

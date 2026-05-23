@@ -55,11 +55,13 @@ class WorkerPool:
         queue_planner,
         live_check_service,
         platform_semaphores,
+        result_store=None,
         logger: logging.Logger | None = None,
     ) -> None:
         self._queue_planner = queue_planner
         self._live_check_service = live_check_service
         self._semaphores = platform_semaphores
+        self._result_store = result_store
         self._logger = logger or logging.getLogger(__name__)
 
         # ── Internal state ────────────────────────────────────────────
@@ -191,7 +193,8 @@ class WorkerPool:
         """Main loop for a single worker thread.
 
         Continuously dequeues items from the assigned band, acquires the
-        platform semaphore, runs the live check, and releases.
+        platform semaphore, runs the live check, stores the result, and
+        releases.
         """
         while not self._stop_event.is_set():
             try:
@@ -204,7 +207,9 @@ class WorkerPool:
                 stream_id, platform_key = item
                 self._semaphores.acquire_sync(platform_key)
                 try:
-                    self._live_check_service.check_stream(stream_id)
+                    result = self._live_check_service.check_stream(stream_id)
+                    if self._result_store is not None:
+                        self._result_store.store(stream_id, result)
                 finally:
                     self._semaphores.release_sync(platform_key)
             except Exception:

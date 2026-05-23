@@ -53,9 +53,6 @@ from app.infrastructure.db.connection import get_connection
 from app.infrastructure.db.migrations import apply_migrations
 from app.infrastructure.resolvers.resolver_chain import ResolverChain
 from app.infrastructure.resolvers.result import ResolveResult
-from app.infrastructure.repositories.monitoring_snapshot_repository import (
-    MonitoringSnapshotRepository,
-)
 from app.infrastructure.repositories.recording_session_repository import (
     RecordingSessionRepository,
 )
@@ -139,7 +136,6 @@ def db_path(tmp_path) -> str:
 def container(db_path, tmp_path) -> Container:
     c = Container()
     c.stream_target_repo = StreamTargetRepository(db_path)
-    c.monitoring_snapshot_repo = MonitoringSnapshotRepository(db_path)
     c.recording_session_repo = RecordingSessionRepository(db_path)
     c.recording_artifact_repo = MagicMock()
 
@@ -147,13 +143,16 @@ def container(db_path, tmp_path) -> Container:
         store=CookieStore(base_dir=str(tmp_path / "cookies")),
     )
 
+    # ── Mock monitoring cycle for snapshot queries ────────────────
+    mock_cycle = MagicMock()
+    mock_cycle.get_all_snapshots.return_value = []
+    mock_cycle.get_snapshot.return_value = None
+
     c.add_stream_handler = AddStreamHandler(
         stream_target_repo=c.stream_target_repo,
-        monitoring_snapshot_repo=c.monitoring_snapshot_repo,
     )
     c.disable_monitoring_handler = DisableMonitoringHandler(
         stream_target_repo=c.stream_target_repo,
-        monitoring_snapshot_repo=c.monitoring_snapshot_repo,
     )
     c.enable_monitoring_handler = EnableMonitoringHandler(
         stream_target_repo=c.stream_target_repo,
@@ -169,11 +168,11 @@ def container(db_path, tmp_path) -> Container:
     )
     c.list_streams_handler = ListStreamsHandler(
         stream_target_repo=c.stream_target_repo,
-        monitoring_snapshot_repo=c.monitoring_snapshot_repo,
+        monitoring_cycle=mock_cycle,
     )
     c.get_dashboard_state_handler = GetDashboardStateHandler(
         stream_target_repo=c.stream_target_repo,
-        monitoring_snapshot_repo=c.monitoring_snapshot_repo,
+        monitoring_cycle=mock_cycle,
     )
     c.list_recordings_handler = ListRecordingsHandler(
         recording_session_repo=c.recording_session_repo,
@@ -193,7 +192,6 @@ def container(db_path, tmp_path) -> Container:
     c.live_check_service = LiveCheckService(
         resolver_chain=c.resolver_chain,
         stream_target_repo=c.stream_target_repo,
-        monitoring_snapshot_repo=c.monitoring_snapshot_repo,
     )
     c.force_check_handler = ForceCheckHandler(
         live_check_service=c.live_check_service,

@@ -25,22 +25,6 @@ CREATE TABLE IF NOT EXISTS stream_targets (
     updated_at TEXT NOT NULL
 );
 
-CREATE TABLE IF NOT EXISTS monitoring_snapshots (
-    stream_target_id TEXT PRIMARY KEY,
-    state TEXT NOT NULL,
-    queue_band TEXT,
-    current_likelihood REAL NOT NULL,
-    current_confidence TEXT NOT NULL,
-    next_check_at TEXT,
-    last_checked_at TEXT,
-    last_live_at TEXT,
-    current_recording_session_id TEXT,
-    last_error_code TEXT,
-    last_error_message TEXT,
-    updated_at TEXT NOT NULL,
-    FOREIGN KEY (stream_target_id) REFERENCES stream_targets(id) ON DELETE CASCADE
-);
-
 CREATE TABLE IF NOT EXISTS recording_sessions (
     id TEXT PRIMARY KEY,
     stream_target_id TEXT NOT NULL,
@@ -83,14 +67,6 @@ def apply_migrations(connection: sqlite3.Connection) -> None:
     Idempotent — safe to call on every startup.
     """
     connection.executescript(SCHEMA_SQL)
-
-    _migrate_add_column(
-        connection,
-        table="monitoring_snapshots",
-        column="resolved_stream_url",
-        definition="TEXT",
-    )
-
     connection.commit()
 
 

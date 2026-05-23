@@ -6,13 +6,8 @@ from app.application.commands.add_stream import (
     AddStreamCommand,
     AddStreamHandler,
 )
-from app.domain.monitoring.states import MonitoringState
-from app.domain.shared.types import Confidence
 from app.infrastructure.db.connection import get_connection
 from app.infrastructure.db.migrations import apply_migrations
-from app.infrastructure.repositories.monitoring_snapshot_repository import (
-    MonitoringSnapshotRepository,
-)
 from app.infrastructure.repositories.stream_target_repository import (
     StreamTargetRepository,
 )
@@ -33,12 +28,11 @@ def db_path(tmp_path) -> str:
 def handler(db_path) -> AddStreamHandler:
     return AddStreamHandler(
         stream_target_repo=StreamTargetRepository(db_path),
-        monitoring_snapshot_repo=MonitoringSnapshotRepository(db_path),
     )
 
 
 class TestAddStreamHandler:
-    def test_creates_target_and_snapshot(self, handler) -> None:
+    def test_creates_target(self, handler) -> None:
         cmd = AddStreamCommand(
             platform="twitch",
             handle="teststreamer",
@@ -57,14 +51,6 @@ class TestAddStreamHandler:
         assert target.enabled is True
         assert target.favorite is False
         assert target.schedule_mode.value == "none"
-
-        # Monitoring snapshot is persisted with IDLE state
-        snapshot = handler._snapshot_repo.get(target_id)
-        assert snapshot is not None
-        assert snapshot.stream_target_id == target_id
-        assert snapshot.state == MonitoringState.IDLE
-        assert snapshot.current_likelihood == 0.0
-        assert snapshot.current_confidence == Confidence.LOW
 
     def test_accepts_optional_fields(self, handler) -> None:
         cmd = AddStreamCommand(

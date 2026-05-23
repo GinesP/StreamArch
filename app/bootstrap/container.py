@@ -16,7 +16,6 @@ class Container:
 
     # ── Repositories ──────────────────────────────────────────────
     stream_target_repo: object = None
-    monitoring_snapshot_repo: object = None
     recording_session_repo: object = None
     recording_artifact_repo: object = None
     metrics_bucket_repo: object = None

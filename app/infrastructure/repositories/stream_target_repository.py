@@ -96,9 +96,9 @@ class StreamTargetRepository:
         Uses ``INSERT … ON CONFLICT(id) DO UPDATE SET …`` (UPSERT) instead
         of ``INSERT OR REPLACE`` so that the row is updated in-place without
         a DELETE-then-INSERT cycle.  This avoids triggering ``ON DELETE
-        CASCADE`` on child tables (``monitoring_snapshots``,
-        ``recording_sessions``) that reference ``stream_targets`` — rows in
-        those tables are preserved across target updates.
+        CASCADE`` on child tables (``recording_sessions``) that reference
+        ``stream_targets`` — rows in those tables are preserved across
+        target updates.
         """
         row = _to_row(target)
         with write_lock:

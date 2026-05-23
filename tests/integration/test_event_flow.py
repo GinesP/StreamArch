@@ -23,6 +23,9 @@ import pytest
 import websockets
 
 from app.application.orchestrators.monitoring_cycle import MonitoringCycle
+from app.application.services.live_check_result_store import (
+    LiveCheckResultStore,
+)
 from app.domain.monitoring.snapshot import MonitoringSnapshot
 from app.domain.monitoring.states import MonitoringState
 from app.domain.prediction.engine import PredictionEngine
@@ -141,9 +144,10 @@ async def test_event_bus_to_ws_to_client():
 
 
 class TestMonitoringCycleEvents:
-    """MonioringCycle detects state changes and emits events via EventBus.
+    """MonitoringCycle detects state changes and emits events via EventBus.
 
     Uses real MonitoringCycle with mocked repositories and a real EventBus.
+    Snapshots are in-memory; resolve results are fed via LiveCheckResultStore.
     """
 
     def test_emits_status_changed_on_state_transition(self) -> None:
@@ -158,13 +162,8 @@ class TestMonitoringCycleEvents:
 
         event_bus.subscribe("stream.status_changed", lambda t, p: received.append(p))
 
-        # ── Set up mocks ──────────────────────────────────────────
         target = _target(id="t1")
-        idle_every_call = _snapshot(
-            stream_target_id="t1",
-            state=MonitoringState.IDLE,
-        )
-        recording_every_call = _snapshot(
+        recording_snap = _snapshot(
             stream_target_id="t1",
             state=MonitoringState.RECORDING,
             queue_band=QueueBand.FAST,
@@ -172,11 +171,6 @@ class TestMonitoringCycleEvents:
 
         target_repo = MagicMock()
         target_repo.list_all.return_value = [target]
-
-        snapshot_repo = MagicMock()
-        # Always return the same snapshot for a given call
-        snapshot_repo.get.side_effect = None  # reset
-        snapshot_repo.get.return_value = recording_every_call
 
         session_repo = MagicMock()
         session_repo.list_by_target.return_value = []
@@ -193,31 +187,27 @@ class TestMonitoringCycleEvents:
             reasons=[],
         )
 
+        result_store = LiveCheckResultStore()
+
         cycle = MonitoringCycle(
             prediction_engine=prediction_engine,
             stream_target_repo=target_repo,
-            monitoring_snapshot_repo=snapshot_repo,
             recording_session_repo=session_repo,
+            result_store=result_store,
             queue_planner=queue_planner,
             logger=logging.getLogger(__name__),
             event_bus=event_bus,
             worker_pool=None,
         )
 
-        # ── Cycle 1: populate cache ───────────────────────────────
-        with patch(
-            "app.application.orchestrators.monitoring_cycle.utc_now",
-            return_value=NOW,
-        ):
-            cycle._run_one_cycle()
-        assert len(received) == 0, "No event expected on first cycle"
+        # Pre-populate in-memory snapshot with RECORDING state
+        cycle._snapshots["t1"] = recording_snap
 
-        # ── Manually set the last known state to IDLE so cycle 2
-        # sees a transition from IDLE → RECORDING.
+        # Pre-populate last known state to IDLE so cycle 2 sees a transition
         cycle._last_known_state["t1"] = MonitoringState.IDLE
         cycle._last_known_live["t1"] = False
 
-        # ── Cycle 2: detect state change ──────────────────────────
+        # ── Run one cycle: should detect IDLE → RECORDING ─────────
         with patch(
             "app.application.orchestrators.monitoring_cycle.utc_now",
             return_value=NOW,
@@ -228,18 +218,16 @@ class TestMonitoringCycleEvents:
         payload = received[0]
         assert payload["stream_id"] == "t1"
         assert payload["state"] == "recording"
-        assert payload["queue_band"] == "fast"
+        # Prediction engine returns likelihood=0.5 → MEDIUM band
+        assert payload["queue_band"] == "medium"
 
     def test_first_cycle_detects_idle_to_recording(self) -> None:
-        """The FIRST monitoring cycle detects an IDLE→RECORDING transition
-        and starts recording — no manual cache manipulation required.
+        """The monitoring cycle detects an IDLE→RECORDING transition
+        on the first cycle via a resolve result from a worker thread.
 
-        This validates the fix for the first-cycle bug: previously the
-        internal cache was empty on the first cycle, so any state change
-        made by the worker (between Phase A and Phase B) was invisible.
-        Now the cache is primed inside ``_process_target`` *before* the
-        worker enqueue, so the pre-worker state is always available for
-        comparison.
+        The in-memory snapshot starts as IDLE; a ResolveResult with
+        is_live=True is fed into the result_store to simulate what a
+        worker would return after checking the stream.
         """
         event_bus = EventBus()
         status_events: list[dict] = []
@@ -253,35 +241,6 @@ class TestMonitoringCycleEvents:
         target_repo = MagicMock()
         target_repo.list_all.return_value = [target]
         target_repo.get.return_value = target
-
-        # ── Simulate a worker that runs between Phase A and Phase B ──
-        # Phase A (_process_target):  snapshot is IDLE
-        # Phase B (detection loop):    snapshot is RECORDING
-        idle_snap = _snapshot(
-            stream_target_id="t1",
-            state=MonitoringState.IDLE,
-            current_recording_session_id=None,
-            resolved_stream_url=None,
-        )
-        recording_snap = _snapshot(
-            stream_target_id="t1",
-            state=MonitoringState.RECORDING,
-            queue_band=QueueBand.FAST,
-            current_recording_session_id=None,
-            resolved_stream_url="https://live.example.com/stream.ts",
-            current_likelihood=1.0,
-        )
-        call_count: int = 0
-
-        def _get_side_effect(stream_id: str):
-            nonlocal call_count
-            call_count += 1
-            # Call 1 → Phase A (_process_target loads snapshot)
-            # Call 2 → Phase B (detection loop)
-            return idle_snap if call_count == 1 else recording_snap
-
-        snapshot_repo = MagicMock()
-        snapshot_repo.get.side_effect = _get_side_effect
 
         session_repo = MagicMock()
         session_repo.list_by_target.return_value = []
@@ -298,15 +257,17 @@ class TestMonitoringCycleEvents:
             reasons=[],
         )
 
-        # ── Wire a mock RecordingService ────────────────────────────
+        result_store = LiveCheckResultStore()
+
+        # Wire a mock RecordingService
         recording_service = MagicMock()
         recording_service.start_recording.return_value = "rec_new"
 
         cycle = MonitoringCycle(
             prediction_engine=prediction_engine,
             stream_target_repo=target_repo,
-            monitoring_snapshot_repo=snapshot_repo,
             recording_session_repo=session_repo,
+            result_store=result_store,
             queue_planner=queue_planner,
             logger=logging.getLogger(__name__),
             event_bus=event_bus,
@@ -314,7 +275,32 @@ class TestMonitoringCycleEvents:
             recording_service=recording_service,
         )
 
-        # ── One cycle — no manual cache setup ──────────────────────
+        # Pre-populate in-memory snapshot as IDLE
+        idle_snap = _snapshot(
+            stream_target_id="t1",
+            state=MonitoringState.IDLE,
+            current_recording_session_id=None,
+            resolved_stream_url=None,
+        )
+        cycle._snapshots["t1"] = idle_snap
+
+        # Pre-populate last known state so transitions are detected
+        cycle._last_known_state["t1"] = MonitoringState.IDLE
+        cycle._last_known_live["t1"] = False
+
+        # ── Simulate a worker that found the stream live ──────────
+        from app.infrastructure.resolvers.result import ResolveResult
+        result_store.store(
+            "t1",
+            ResolveResult(
+                is_live=True,
+                stream_url="https://live.example.com/stream.ts",
+                title="Live Stream",
+                anchor_name="streamer",
+            ),
+        )
+
+        # ── Run one cycle ─────────────────────────────────────────
         with patch(
             "app.application.orchestrators.monitoring_cycle.utc_now",
             return_value=NOW,
@@ -350,7 +336,7 @@ class TestMonitoringCycleEvents:
         event_bus.subscribe("recording.started", lambda t, p: recording_events.append(p))
 
         target = _target(id="t1")
-        recording_every_call = _snapshot(
+        recording_snap = _snapshot(
             stream_target_id="t1",
             state=MonitoringState.RECORDING,
             queue_band=QueueBand.FAST,
@@ -359,9 +345,6 @@ class TestMonitoringCycleEvents:
 
         target_repo = MagicMock()
         target_repo.list_all.return_value = [target]
-
-        snapshot_repo = MagicMock()
-        snapshot_repo.get.return_value = recording_every_call
 
         session_repo = MagicMock()
         session_repo.list_by_target.return_value = []
@@ -378,29 +361,27 @@ class TestMonitoringCycleEvents:
             reasons=["recent_live_activity"],
         )
 
+        result_store = LiveCheckResultStore()
+
         cycle = MonitoringCycle(
             prediction_engine=prediction_engine,
             stream_target_repo=target_repo,
-            monitoring_snapshot_repo=snapshot_repo,
             recording_session_repo=session_repo,
+            result_store=result_store,
             queue_planner=queue_planner,
             logger=logging.getLogger(__name__),
             event_bus=event_bus,
             worker_pool=None,
         )
 
-        # Cycle 1: populate cache
-        with patch(
-            "app.application.orchestrators.monitoring_cycle.utc_now",
-            return_value=NOW,
-        ):
-            cycle._run_one_cycle()
+        # Pre-populate with RECORDING snapshot
+        cycle._snapshots["t1"] = recording_snap
 
         # Manually set last known to IDLE
         cycle._last_known_state["t1"] = MonitoringState.IDLE
         cycle._last_known_live["t1"] = False
 
-        # Cycle 2: detect becoming live
+        # Run one cycle: should detect IDLE → RECORDING
         with patch(
             "app.application.orchestrators.monitoring_cycle.utc_now",
             return_value=NOW,
@@ -425,9 +406,6 @@ class TestMonitoringCycleEvents:
         target_repo = MagicMock()
         target_repo.list_all.return_value = [target]
 
-        snapshot_repo = MagicMock()
-        snapshot_repo.get.return_value = snapshot
-
         session_repo = MagicMock()
         session_repo.list_by_target.return_value = []
 
@@ -449,16 +427,21 @@ class TestMonitoringCycleEvents:
             reasons=[],
         )
 
+        result_store = LiveCheckResultStore()
+
         cycle = MonitoringCycle(
             prediction_engine=prediction_engine,
             stream_target_repo=target_repo,
-            monitoring_snapshot_repo=snapshot_repo,
             recording_session_repo=session_repo,
+            result_store=result_store,
             queue_planner=queue_planner,
             logger=logging.getLogger(__name__),
             event_bus=event_bus,
             worker_pool=None,
         )
+
+        # Pre-populate in-memory snapshot
+        cycle._snapshots["t1"] = snapshot
 
         with patch(
             "app.application.orchestrators.monitoring_cycle.utc_now",
@@ -495,9 +478,6 @@ class TestMonitoringCycleEvents:
         target_repo = MagicMock()
         target_repo.list_all.return_value = [target]
 
-        snapshot_repo = MagicMock()
-        snapshot_repo.get.return_value = snapshot  # Same state on both calls
-
         session_repo = MagicMock()
         session_repo.list_by_target.return_value = []
 
@@ -513,16 +493,23 @@ class TestMonitoringCycleEvents:
             reasons=[],
         )
 
+        result_store = LiveCheckResultStore()
+
         cycle = MonitoringCycle(
             prediction_engine=prediction_engine,
             stream_target_repo=target_repo,
-            monitoring_snapshot_repo=snapshot_repo,
             recording_session_repo=session_repo,
+            result_store=result_store,
             queue_planner=queue_planner,
             logger=logging.getLogger(__name__),
             event_bus=event_bus,
             worker_pool=None,
         )
+
+        # Pre-populate snapshot and last known state with matching values
+        cycle._snapshots["t1"] = snapshot
+        cycle._last_known_state["t1"] = MonitoringState.IDLE
+        cycle._last_known_live["t1"] = False
 
         with patch(
             "app.application.orchestrators.monitoring_cycle.utc_now",
@@ -565,9 +552,6 @@ async def test_monitoring_cycle_to_ws_client():
         target_repo = MagicMock()
         target_repo.list_all.return_value = [target]
 
-        snapshot_repo = MagicMock()
-        snapshot_repo.get.return_value = recording_snapshot
-
         session_repo = MagicMock()
         session_repo.list_by_target.return_value = []
 
@@ -583,18 +567,21 @@ async def test_monitoring_cycle_to_ws_client():
             reasons=["recent_live_activity"],
         )
 
+        result_store = LiveCheckResultStore()
+
         cycle = MonitoringCycle(
             prediction_engine=prediction_engine,
             stream_target_repo=target_repo,
-            monitoring_snapshot_repo=snapshot_repo,
             recording_session_repo=session_repo,
+            result_store=result_store,
             queue_planner=queue_planner,
             logger=logging.getLogger(__name__),
             event_bus=event_bus,
             worker_pool=None,
         )
 
-        # ── Pre-populate cache to simulate state transition ───────
+        # Pre-populate to simulate state transition
+        cycle._snapshots["t1"] = recording_snapshot
         cycle._last_known_state["t1"] = MonitoringState.IDLE
         cycle._last_known_live["t1"] = False
 

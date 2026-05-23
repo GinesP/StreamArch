@@ -1,5 +1,7 @@
 """Tests for GetDashboardStateHandler."""
 
+from unittest.mock import MagicMock
+
 import pytest
 
 from app.application.queries.get_dashboard_state import (
@@ -13,9 +15,6 @@ from app.domain.stream_target.entities import StreamTarget
 from app.domain.stream_target.value_objects import ScheduleMode
 from app.infrastructure.db.connection import get_connection
 from app.infrastructure.db.migrations import apply_migrations
-from app.infrastructure.repositories.monitoring_snapshot_repository import (
-    MonitoringSnapshotRepository,
-)
 from app.infrastructure.repositories.stream_target_repository import (
     StreamTargetRepository,
 )
@@ -41,10 +40,11 @@ def _insert_target(repo: StreamTargetRepository, **overrides) -> str:
     return target.id
 
 
-def _insert_snapshot(repo: MonitoringSnapshotRepository, **overrides) -> None:
+def _make_snapshot(**overrides) -> MonitoringSnapshot:
+    """Build a MonitoringSnapshot for test setup."""
     now = utc_now()
-    snapshot = MonitoringSnapshot(
-        stream_target_id=overrides["stream_target_id"],
+    return MonitoringSnapshot(
+        stream_target_id=overrides.get("stream_target_id", "unknown"),
         state=overrides.get("state", MonitoringState.IDLE),
         queue_band=overrides.get("queue_band", None),
         current_likelihood=overrides.get("current_likelihood", 0.0),
@@ -57,7 +57,6 @@ def _insert_snapshot(repo: MonitoringSnapshotRepository, **overrides) -> None:
         last_error_message=overrides.get("last_error_message", None),
         updated_at=overrides.get("updated_at", now),
     )
-    repo.save(snapshot)
 
 
 @pytest.fixture
@@ -72,10 +71,17 @@ def db_path(tmp_path) -> str:
 
 
 @pytest.fixture
-def handler(db_path) -> GetDashboardStateHandler:
+def target_repo(db_path) -> StreamTargetRepository:
+    return StreamTargetRepository(db_path)
+
+
+@pytest.fixture
+def handler(target_repo) -> GetDashboardStateHandler:
+    monitoring_cycle = MagicMock()
+    monitoring_cycle.get_all_snapshots.return_value = []
     return GetDashboardStateHandler(
-        stream_target_repo=StreamTargetRepository(db_path),
-        monitoring_snapshot_repo=MonitoringSnapshotRepository(db_path),
+        stream_target_repo=target_repo,
+        monitoring_cycle=monitoring_cycle,
     )
 
 
@@ -88,23 +94,16 @@ class TestGetDashboardStateHandler:
         assert state.idle_count == 0
         assert state.streams == []
 
-    def test_counts_live_streams(self, handler) -> None:
-        target_repo = handler._target_repo
-        snapshot_repo = handler._snapshot_repo
-
+    def test_counts_live_streams(self, handler, target_repo) -> None:
         live_id = _insert_target(target_repo, id="live", handle="live_user")
         error_id = _insert_target(target_repo, id="err", handle="error_user")
         idle_id = _insert_target(target_repo, id="idle", handle="idle_user")
 
-        _insert_snapshot(
-            snapshot_repo, stream_target_id=live_id, state=MonitoringState.RECORDING
-        )
-        _insert_snapshot(
-            snapshot_repo, stream_target_id=error_id, state=MonitoringState.ERROR
-        )
-        _insert_snapshot(
-            snapshot_repo, stream_target_id=idle_id, state=MonitoringState.IDLE
-        )
+        handler._monitoring_cycle.get_all_snapshots.return_value = [
+            _make_snapshot(stream_target_id=live_id, state=MonitoringState.RECORDING),
+            _make_snapshot(stream_target_id=error_id, state=MonitoringState.ERROR),
+            _make_snapshot(stream_target_id=idle_id, state=MonitoringState.IDLE),
+        ]
 
         state = handler.handle(GetDashboardStateQuery())
 
@@ -113,20 +112,13 @@ class TestGetDashboardStateHandler:
         assert state.error_count == 1
         assert state.idle_count == 1
 
-    def test_counts_all_non_recording_error_as_idle(self, handler) -> None:
-        target_repo = handler._target_repo
-        snapshot_repo = handler._snapshot_repo
-
+    def test_counts_all_non_recording_error_as_idle(self, handler, target_repo) -> None:
         t1 = _insert_target(target_repo, id="t1", handle="checking")
         t2 = _insert_target(target_repo, id="t2", handle="postproc")
-        _insert_snapshot(
-            snapshot_repo, stream_target_id=t1, state=MonitoringState.CHECKING
-        )
-        _insert_snapshot(
-            snapshot_repo,
-            stream_target_id=t2,
-            state=MonitoringState.POST_PROCESSING,
-        )
+        handler._monitoring_cycle.get_all_snapshots.return_value = [
+            _make_snapshot(stream_target_id=t1, state=MonitoringState.CHECKING),
+            _make_snapshot(stream_target_id=t2, state=MonitoringState.POST_PROCESSING),
+        ]
 
         state = handler.handle(GetDashboardStateQuery())
 
@@ -135,9 +127,9 @@ class TestGetDashboardStateHandler:
         assert state.error_count == 0
         assert state.idle_count == 2  # CHECKING and POST_PROCESSING count as idle
 
-    def test_classifies_no_snapshot_as_idle(self, handler) -> None:
-        target_repo = handler._target_repo
+    def test_classifies_no_snapshot_as_idle(self, handler, target_repo) -> None:
         _insert_target(target_repo, id="no-snap", handle="fresh")
+        handler._monitoring_cycle.get_all_snapshots.return_value = []
 
         state = handler.handle(GetDashboardStateQuery())
 
@@ -145,23 +137,21 @@ class TestGetDashboardStateHandler:
         assert state.idle_count == 1
         assert state.streams[0].state == "unknown"
 
-    def test_includes_stream_overviews(self, handler) -> None:
-        target_repo = handler._target_repo
-        snapshot_repo = handler._snapshot_repo
-
+    def test_includes_stream_overviews(self, handler, target_repo) -> None:
         tid = _insert_target(
             target_repo,
             id="dash-test",
             handle="dashboard_user",
             display_name="Dashboard User",
         )
-        _insert_snapshot(
-            snapshot_repo,
-            stream_target_id=tid,
-            state=MonitoringState.RECORDING,
-            current_likelihood=0.88,
-            current_confidence=Confidence.HIGH,
-        )
+        handler._monitoring_cycle.get_all_snapshots.return_value = [
+            _make_snapshot(
+                stream_target_id=tid,
+                state=MonitoringState.RECORDING,
+                current_likelihood=0.88,
+                current_confidence=Confidence.HIGH,
+            ),
+        ]
 
         state = handler.handle(GetDashboardStateQuery())
         dto = state.streams[0]

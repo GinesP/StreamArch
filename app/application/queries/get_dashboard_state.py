@@ -3,16 +3,13 @@
 Aggregates all stream targets with their monitoring snapshots and
 returns summary counts so the UI can render a dashboard without
 multiple round-trips.
+
+Snapshots are read from the :class:`MonitoringCycle`'s in-memory store
+instead of a database repository.
 """
 
 from app.application.dto.streams import DashboardStateDTO, StreamOverviewDTO
 from app.domain.monitoring.states import MonitoringState
-from app.infrastructure.repositories.monitoring_snapshot_repository import (
-    MonitoringSnapshotRepository,
-)
-from app.infrastructure.repositories.stream_target_repository import (
-    StreamTargetRepository,
-)
 
 
 class GetDashboardStateQuery:
@@ -53,19 +50,26 @@ def _build_overview(target, snapshot) -> StreamOverviewDTO:
 
 
 class GetDashboardStateHandler:
-    """Handles :class:`GetDashboardStateQuery` — returns aggregate state."""
+    """Handles :class:`GetDashboardStateQuery` — returns aggregate state.
 
-    def __init__(
-        self,
-        stream_target_repo: StreamTargetRepository,
-        monitoring_snapshot_repo: MonitoringSnapshotRepository,
-    ) -> None:
+    Parameters
+    ----------
+    stream_target_repo:
+        Repository for ``StreamTarget`` entities.
+    monitoring_cycle:
+        The ``MonitoringCycle`` that owns the in-memory snapshots.
+    """
+
+    def __init__(self, stream_target_repo, monitoring_cycle) -> None:
         self._target_repo = stream_target_repo
-        self._snapshot_repo = monitoring_snapshot_repo
+        self._monitoring_cycle = monitoring_cycle
 
     def handle(self, query: GetDashboardStateQuery) -> DashboardStateDTO:
         targets = self._target_repo.list_all()
-        snapshots = {s.stream_target_id: s for s in self._snapshot_repo.list_all()}
+        snapshots = {
+            s.stream_target_id: s
+            for s in self._monitoring_cycle.get_all_snapshots()
+        }
 
         live_count = 0
         error_count = 0

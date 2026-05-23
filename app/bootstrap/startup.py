@@ -12,6 +12,9 @@ from pathlib import Path
 
 from app.application.orchestrators.monitoring_cycle import MonitoringCycle
 from app.application.services.cookie_service import CookieService
+from app.application.services.live_check_result_store import (
+    LiveCheckResultStore,
+)
 from app.application.services.live_check_service import LiveCheckService
 from app.application.services.recording_service import RecordingService
 from app.domain.recording.config import RecordingConfig
@@ -36,9 +39,6 @@ from app.infrastructure.resolvers.resolver_chain import ResolverChain
 from app.infrastructure.resolvers.streamget_resolver import StreamGetResolver
 from app.infrastructure.resolvers.streamlink_resolver import StreamlinkResolver
 from app.infrastructure.resolvers.ytdlp_resolver import YtDlpResolver
-from app.infrastructure.repositories.monitoring_snapshot_repository import (
-    MonitoringSnapshotRepository,
-)
 from app.infrastructure.repositories.recording_session_repository import (
     RecordingSessionRepository,
 )
@@ -94,7 +94,6 @@ def start_application(container: Container) -> None:
 
     # ── Repositories (connection-per-operation) ───────────────────
     container.stream_target_repo = StreamTargetRepository(str(db_path))
-    container.monitoring_snapshot_repo = MonitoringSnapshotRepository(str(db_path))
     container.recording_session_repo = RecordingSessionRepository(str(db_path))
     container.recording_artifact_repo = RecordingArtifactRepository(str(db_path))
 
@@ -139,11 +138,13 @@ def start_application(container: Container) -> None:
     container.live_check_service = LiveCheckService(
         resolver_chain=container.resolver_chain,
         stream_target_repo=container.stream_target_repo,
-        monitoring_snapshot_repo=container.monitoring_snapshot_repo,
     )
 
     # ── Prediction engine & priority queue system ─────────────────
     container.prediction_engine = PredictionEngine()
+
+    # ── Live check result store (thread-safe, shared) ────────────
+    result_store = LiveCheckResultStore()
 
     # ── Event bus ─────────────────────────────────────────────────
     container.event_bus = EventBus()
@@ -154,6 +155,7 @@ def start_application(container: Container) -> None:
         queue_planner=container.queue_planner,
         live_check_service=container.live_check_service,
         platform_semaphores=container.platform_semaphores,
+        result_store=result_store,
         logger=container.logger,
     )
     container.worker_pool.start()
@@ -165,7 +167,6 @@ def start_application(container: Container) -> None:
         session_repo=container.recording_session_repo,
         artifact_repo=container.recording_artifact_repo,
         target_repo=container.stream_target_repo,
-        snapshot_repo=container.monitoring_snapshot_repo,
         event_bus=container.event_bus,
         cookie_service=container.cookie_service,
         recording_config=recording_config,
@@ -174,8 +175,8 @@ def start_application(container: Container) -> None:
     container.monitoring_cycle = MonitoringCycle(
         prediction_engine=container.prediction_engine,
         stream_target_repo=container.stream_target_repo,
-        monitoring_snapshot_repo=container.monitoring_snapshot_repo,
         recording_session_repo=container.recording_session_repo,
+        result_store=result_store,
         queue_planner=container.queue_planner,
         logger=container.logger,
         event_bus=container.event_bus,
@@ -195,14 +196,12 @@ def start_application(container: Container) -> None:
     # ── Application handlers ──────────────────────────────────────
     container.add_stream_handler = AddStreamHandler(
         stream_target_repo=container.stream_target_repo,
-        monitoring_snapshot_repo=container.monitoring_snapshot_repo,
     )
     container.update_stream_handler = UpdateStreamHandler(
         stream_target_repo=container.stream_target_repo,
     )
     container.disable_monitoring_handler = DisableMonitoringHandler(
         stream_target_repo=container.stream_target_repo,
-        monitoring_snapshot_repo=container.monitoring_snapshot_repo,
     )
     container.enable_monitoring_handler = EnableMonitoringHandler(
         stream_target_repo=container.stream_target_repo,
@@ -215,11 +214,11 @@ def start_application(container: Container) -> None:
     )
     container.list_streams_handler = ListStreamsHandler(
         stream_target_repo=container.stream_target_repo,
-        monitoring_snapshot_repo=container.monitoring_snapshot_repo,
+        monitoring_cycle=container.monitoring_cycle,
     )
     container.get_dashboard_state_handler = GetDashboardStateHandler(
         stream_target_repo=container.stream_target_repo,
-        monitoring_snapshot_repo=container.monitoring_snapshot_repo,
+        monitoring_cycle=container.monitoring_cycle,
     )
     container.list_recordings_handler = ListRecordingsHandler(
         recording_session_repo=container.recording_session_repo,

@@ -1,20 +1,14 @@
 """Add a new stream target to monitoring.
 
-Creates a :class:`StreamTarget` entity and an initial
-:class:`MonitoringSnapshot` (state = IDLE) so the target is
-immediately visible in dashboards.
+Creates a :class:`StreamTarget` entity.  The monitoring cycle will
+create an in-memory snapshot when it first sees the target.
 """
 
 import uuid
 
-from app.domain.monitoring.snapshot import MonitoringSnapshot
-from app.domain.monitoring.states import MonitoringState
-from app.domain.shared.types import Confidence, Platform, utc_now
+from app.domain.shared.types import Platform, utc_now
 from app.domain.stream_target.entities import StreamTarget
 from app.domain.stream_target.value_objects import ScheduleMode
-from app.infrastructure.repositories.monitoring_snapshot_repository import (
-    MonitoringSnapshotRepository,
-)
 from app.infrastructure.repositories.stream_target_repository import (
     StreamTargetRepository,
 )
@@ -78,10 +72,8 @@ class AddStreamHandler:
     def __init__(
         self,
         stream_target_repo: StreamTargetRepository,
-        monitoring_snapshot_repo: MonitoringSnapshotRepository,
     ) -> None:
         self._target_repo = stream_target_repo
-        self._snapshot_repo = monitoring_snapshot_repo
 
     def handle(self, cmd: AddStreamCommand) -> str:
         """Execute and return the new stream target id."""
@@ -115,22 +107,5 @@ class AddStreamHandler:
             updated_at=now,
         )
 
-        snapshot = MonitoringSnapshot(
-            stream_target_id=target_id,
-            state=MonitoringState.IDLE,
-            queue_band=None,
-            current_likelihood=0.0,
-            current_confidence=Confidence.LOW,
-            next_check_at=None,
-            last_checked_at=None,
-            last_live_at=None,
-            current_recording_session_id=None,
-            last_error_code=None,
-            last_error_message=None,
-            updated_at=now,
-        )
-
         self._target_repo.save(target)
-        self._snapshot_repo.save(snapshot)
-
         return target_id
