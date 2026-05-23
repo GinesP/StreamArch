@@ -2,10 +2,15 @@
 
 Single responsible: configure and return the ``streamarch`` logger
 with a console handler.  No file handlers, no third-party libs.
+
+All log timestamps are in UTC with an explicit ``Z`` suffix so there
+is no ambiguity between local time (``%(asctime)s`` default) and the
+UTC timestamps used throughout the domain.
 """
 
 import logging
 import sys
+import time
 
 
 def setup_logging(level: str = "INFO", fmt: str = "detailed") -> logging.Logger:
@@ -16,7 +21,7 @@ def setup_logging(level: str = "INFO", fmt: str = "detailed") -> logging.Logger:
     level:
         One of ``DEBUG``, ``INFO``, ``WARNING``, ``ERROR``, ``CRITICAL``.
     fmt:
-        ``"detailed"`` → timestamp, level, name, message.
+        ``"detailed"`` → UTC timestamp, level, name, message.
         ``"simple"``   → level and message only.
 
     Returns
@@ -34,9 +39,10 @@ def setup_logging(level: str = "INFO", fmt: str = "detailed") -> logging.Logger:
             formatter = logging.Formatter("%(levelname)s: %(message)s")
         else:
             formatter = logging.Formatter(
-                "%(asctime)s [%(levelname)-7s] %(name)s: %(message)s",
+                "%(asctime)sZ [%(levelname)-7s] %(name)s: %(message)s",
                 datefmt="%Y-%m-%d %H:%M:%S",
             )
+            formatter.converter = time.gmtime  # UTC instead of local time
 
         handler.setFormatter(formatter)
         logger.addHandler(handler)

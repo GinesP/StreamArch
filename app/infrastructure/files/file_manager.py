@@ -14,6 +14,7 @@ Example
 """
 
 import re
+import zoneinfo
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -33,11 +34,25 @@ class FileManager:
     per_stream_directory:
         Default value for per-stream directory placement.  Can be
         overridden per call to :meth:`allocate_path`.
+    timezone:
+        IANA timezone name (e.g. ``"America/New_York"``) used for
+        filename date/time segments.  ``None`` or ``"UTC"`` means UTC.
     """
 
-    def __init__(self, base_path: Path, per_stream_directory: bool = True) -> None:
+    def __init__(
+        self,
+        base_path: Path,
+        per_stream_directory: bool = True,
+        tz_name: str | None = None,
+    ) -> None:
         self._base_path = base_path
         self._per_stream_directory = per_stream_directory
+        # Parameter is named *tz_name* to avoid shadowing datetime.timezone.
+        self._tz: timezone | zoneinfo.ZoneInfo = (
+            zoneinfo.ZoneInfo(tz_name)
+            if tz_name and tz_name.upper() != "UTC"
+            else timezone.utc
+        )
 
     def allocate_path(
         self,
@@ -76,7 +91,7 @@ class FileManager:
             else self._per_stream_directory
         )
 
-        now = datetime.now(timezone.utc)
+        now = datetime.now(self._tz)
         date_part = now.strftime("%Y-%m-%d")
         time_part = now.strftime("%H-%M-%S")
 

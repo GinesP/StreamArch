@@ -337,9 +337,144 @@ class RecordingService:
         )
 
     def stop_all(self) -> None:
-        """Stop every active recording and finalise all sessions."""
+        """Stop every active recording and finalise all sessions.
+
+        Stops all ffmpeg processes via the runner, then finalises
+        every active session in the database as ``ABORTED`` so no
+        orphaned ``RECORDING`` sessions survive a restart.
+        """
         self._runner.stop_all()
         self._session_to_recording.clear()
+        self.finalize_all_active_sessions(reason="shutdown")
+
+    def finalize_all_active_sessions(self, reason: str = "shutdown") -> int:
+        """Finalise every active (still ``RECORDING``) session in the DB.
+
+        This is a safety net for sessions that were never properly
+        closed — e.g. after a crash where ``_on_runner_exit`` was not
+        called, or during shutdown when the runner mapping is already
+        gone.
+
+        Args:
+            reason:  Reason label stored as ``split_reason``.
+
+        Returns:
+            The number of sessions finalised.
+        """
+        count = 0
+        now = utc_now()
+        for session in self._session_repo.list_all():
+            if not session.is_active:
+                continue
+            try:
+                session.abort(reason=reason)
+                session.ended_at = now
+                session.updated_at = now
+                self._session_repo.save(session)
+                count += 1
+                logger.info(
+                    "Finalised orphaned session %s (target=%s, reason=%s)",
+                    session.id[:8], session.stream_target_id, reason,
+                )
+            except ValueError as exc:
+                logger.error(
+                    "Could not finalise session %s: %s",
+                    session.id[:8], exc,
+                )
+        if count:
+            logger.info("Finalised %d orphaned recording session(s)", count)
+        return count
+
+    # ── Runner callback ───────────────────────────────────────────────
+
+    def _on_runner_exit(self, session_id: str, runner_recording_id: str) -> None:
+        """Callback invoked when ffmpeg exits unexpectedly.
+
+        Looks up the session, finalises it as ``FAILED`` or ``ABORTED``
+        depending on context, and cleans up the in-memory mapping.
+        This prevents orphaned ``RECORDING`` sessions when ffmpeg
+        crashes, the stream ends, or the process is killed externally.
+        """
+        session = self._session_repo.get(session_id)
+        if session is None:
+            logger.warning(
+                "Runner exit callback: session %s not found",
+                session_id[:8],
+            )
+            return
+
+        if not session.is_active:
+            logger.debug(
+                "Runner exit callback: session %s already finalised",
+                session_id[:8],
+            )
+            return
+
+        self._session_to_recording.pop(session_id, None)
+
+        now = utc_now()
+
+        # ── Update RAW_TS artifact to READY ──────────────────────
+        artifacts = self._artifact_repo.list_by_session(session_id)
+        ts_artifact = next(
+            (a for a in artifacts if a.artifact_type == ArtifactType.RAW_TS),
+            None,
+        )
+        if ts_artifact is not None and ts_artifact.status == ArtifactStatus.WRITING:
+            self._artifact_repo.save(
+                RecordingArtifact(
+                    id=ts_artifact.id,
+                    recording_session_id=ts_artifact.recording_session_id,
+                    artifact_type=ts_artifact.artifact_type,
+                    path=ts_artifact.path,
+                    container_format=ts_artifact.container_format,
+                    status=ArtifactStatus.READY,
+                    size_bytes=ts_artifact.size_bytes,
+                    duration_seconds=ts_artifact.duration_seconds,
+                    checksum=ts_artifact.checksum,
+                    created_at=ts_artifact.created_at,
+                    updated_at=now,
+                )
+            )
+
+        # ── Finalise the session ─────────────────────────────────
+        try:
+            session.fail(
+                error_code="FFMPEG_EXIT",
+                error_message="ffmpeg process exited unexpectedly",
+            )
+            session.ended_at = now
+            session.updated_at = now
+            self._session_repo.save(session)
+        except ValueError as exc:
+            # If fail() transition is invalid, try abort()
+            try:
+                session.abort(reason="unexpected_ffmpeg_exit")
+                session.ended_at = now
+                session.updated_at = now
+                self._session_repo.save(session)
+            except ValueError:
+                logger.error(
+                    "Could not finalise session %s after runner exit: %s",
+                    session_id[:8], exc,
+                )
+                return
+
+        self._emit(
+            "recording.finished",
+            RecordingFinished(
+                recording_session_id=session_id,
+                status=RecordingStatus.FAILED.value,
+            ),
+        )
+
+        logger.info(
+            "Session %s finalised after unexpected ffmpeg exit "
+            "(target=%s, duration=%s)",
+            session_id[:8],
+            session.stream_target_id,
+            session.duration_seconds,
+        )
 
     # ── Event emission ────────────────────────────────────────────
 

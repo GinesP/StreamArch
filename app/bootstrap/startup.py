@@ -109,6 +109,7 @@ def start_application(container: Container) -> None:
     container.file_manager = FileManager(
         base_path=Path(container.config.recordings_dir),
         per_stream_directory=recording_config.per_stream_directory,
+        tz_name=container.config.user_timezone,
     )
     container.file_manager.ensure_directory()
 

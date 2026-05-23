@@ -21,10 +21,14 @@ def shutdown_application(container: Container, reason: str = "shutdown") -> None
         container.monitoring_cycle.stop()
         container.logger.info("Monitoring cycle stopped")
 
-    # ── Stop all active recordings ────────────────────────────────────
-    if container.ffmpeg_runner is not None:
+    # ── Stop all active recordings (finalises sessions in DB) ────────
+    if container.recording_service is not None:
+        container.recording_service.stop_all()
+        container.logger.info("Recording service stopped (all sessions finalised)")
+    elif container.ffmpeg_runner is not None:
+        # Fallback: no recording service wired — just stop ffmpeg.
         container.ffmpeg_runner.stop_all()
-        container.logger.info("FFmpeg runner stopped")
+        container.logger.info("FFmpeg runner stopped (fallback — sessions NOT finalised)")
 
     # ── Stop the worker pool (waits for in-flight checks) ─────────────
     if container.worker_pool is not None:

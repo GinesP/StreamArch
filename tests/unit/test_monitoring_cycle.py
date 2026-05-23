@@ -255,6 +255,64 @@ class TestCycleSingleTarget:
         )
         mock_queue_planner.enqueue.assert_not_called()
 
+    def test_multi_cycle_enforces_deadline(
+        self, cycle, mock_repos, mock_engine, mock_queue_planner
+    ) -> None:
+        """Multi-cycle: due → enqueue + deadline; before due → skip, no
+        deadline push; after due → enqueue again.
+
+        Verifies fix for the perpetual ``0 enqueued`` bug: before the fix,
+        every cycle unconditionally reset ``next_check_at`` to
+        ``now + interval``, so a target that was NOT due would still have
+        its deadline pushed forward — making it NEVER due again.
+
+        This test must fail before the fix and pass after.
+        """
+        target = _target(id="t1")
+        mock_repos["target_repo"].list_all.return_value = [target]
+        sessions: list = []
+        mock_repos["session_repo"].list_by_target.return_value = sessions
+        result = _result(likelihood=0.5, confidence=Confidence.MEDIUM)
+        mock_engine.predict.return_value = result
+
+        # ── Cycle A at NOW (no next_check_at → due) ─────────────
+        with patch(
+            "app.application.orchestrators.monitoring_cycle.utc_now",
+            return_value=NOW,
+        ):
+            cycle._run_one_cycle()
+        mock_queue_planner.enqueue.assert_called_once()
+        snap_a = cycle._snapshots["t1"]
+        assert snap_a.next_check_at is not None
+        assert snap_a.next_check_at > NOW
+        deadline = snap_a.next_check_at  # remember the deadline
+
+        # ── Cycle B at NOW + 1min (before due → SKIP) ──────────
+        mock_queue_planner.reset_mock()
+        with patch(
+            "app.application.orchestrators.monitoring_cycle.utc_now",
+            return_value=NOW + timedelta(minutes=1),
+        ):
+            cycle._run_one_cycle()
+        mock_queue_planner.enqueue.assert_not_called()
+        snap_b = cycle._snapshots["t1"]
+        # CRITICAL: next_check_at MUST be preserved, NOT pushed forward
+        assert snap_b.next_check_at == deadline, (
+            f"next_check_at mutated from {deadline} to {snap_b.next_check_at}"
+        )
+
+        # ── Cycle C at NOW + 10min (after due → enqueue again) ─
+        mock_queue_planner.reset_mock()
+        with patch(
+            "app.application.orchestrators.monitoring_cycle.utc_now",
+            return_value=NOW + timedelta(minutes=10),
+        ):
+            cycle._run_one_cycle()
+        mock_queue_planner.enqueue.assert_called_once()
+        snap_c = cycle._snapshots["t1"]
+        assert snap_c.next_check_at is not None
+        assert snap_c.next_check_at > NOW + timedelta(minutes=10)
+
     def test_prediction_uses_current_snapshot(
         self, cycle, mock_repos, mock_engine, mock_queue_planner
     ) -> None:
@@ -422,6 +480,397 @@ class TestCycleSingleTarget:
 
         assert "1 errors" in caplog.text
         assert "Error processing target t2" in caplog.text
+
+
+# ======================================================================
+# Startup — stale recording sessions (bugfix regression)
+# ======================================================================
+
+
+class TestStartupWithStaleSessions:
+    """Startup NEVER restores RECORDING state from persisted sessions.
+
+    After a restart, stale sessions in the DB with status ``recording``
+    are just that — stale.  There is no ffmpeg process backing them.
+    The snapshot must start as ``IDLE`` so the first live check can
+    transition to ``RECORDING`` normally.
+    """
+
+    def test_stale_recording_session_does_not_produce_recording_snapshot(
+        self, mock_repos, mock_engine, mock_queue_planner, result_store, logger,
+    ) -> None:
+        """Given a target with a stale RECORDING session, the initial
+        snapshot is IDLE, not RECORDING."""
+        from app.domain.recording.session import RecordingSession
+        from app.domain.shared.types import RecordingStatus
+
+        target = _target(id="t1")
+        mock_repos["target_repo"].list_all.return_value = [target]
+
+        stale_session = RecordingSession(
+            id="stale-session-1",
+            stream_target_id="t1",
+            started_at=NOW - timedelta(hours=2),
+            ended_at=None,
+            status=RecordingStatus.RECORDING,
+            source_platform=Platform.TWITCH,
+            stream_title=None,
+            detected_by_queue=None,
+            detection_latency_seconds=None,
+            scheduled_hint_delay_minutes=None,
+            split_reason=None,
+            error_code=None,
+            error_message=None,
+            created_at=NOW - timedelta(hours=2),
+            updated_at=NOW - timedelta(hours=2),
+        )
+        mock_repos["session_repo"].list_by_target.return_value = [stale_session]
+
+        cycle = MonitoringCycle(
+            prediction_engine=mock_engine,
+            stream_target_repo=mock_repos["target_repo"],
+            recording_session_repo=mock_repos["session_repo"],
+            result_store=result_store,
+            queue_planner=mock_queue_planner,
+            logger=logger,
+            loop_interval_seconds=3600,
+            period_days=30.0,
+        )
+
+        cycle._build_initial_snapshots()
+
+        snap = cycle.get_snapshot("t1")
+        assert snap is not None
+        assert snap.state == MonitoringState.IDLE, (
+            f"Expected IDLE, got {snap.state.value}"
+        )
+        assert snap.is_live is False
+        assert snap.current_recording_session_id is None
+        # Historical signal is preserved
+        assert snap.last_live_at is not None
+        # Last-known live cache must be False
+        assert cycle._last_known_live.get("t1") is False
+
+    def test_fresh_live_check_can_start_recording_after_restart(
+        self, mock_repos, mock_engine, mock_queue_planner, result_store, logger,
+    ) -> None:
+        """After restart with a stale session, a fresh live resolve result
+        must be able to transition the snapshot to RECORDING and start a
+        new recording session.
+
+        This tests the full flow: _build_initial_snapshots (IDLE) →
+        _run_one_cycle → Phase B consumes ResolveResult → RECORDING.
+        """
+        from app.domain.recording.session import RecordingSession
+        from app.domain.shared.types import RecordingStatus
+
+        target = _target(id="t1")
+        mock_repos["target_repo"].list_all.return_value = [target]
+
+        stale_session = RecordingSession(
+            id="stale-session-1",
+            stream_target_id="t1",
+            started_at=NOW - timedelta(hours=2),
+            ended_at=None,
+            status=RecordingStatus.RECORDING,
+            source_platform=Platform.TWITCH,
+            stream_title=None,
+            detected_by_queue=None,
+            detection_latency_seconds=None,
+            scheduled_hint_delay_minutes=None,
+            split_reason=None,
+            error_code=None,
+            error_message=None,
+            created_at=NOW - timedelta(hours=2),
+            updated_at=NOW - timedelta(hours=2),
+        )
+        mock_repos["session_repo"].list_by_target.return_value = [stale_session]
+
+        # Mock prediction engine returns not-live prediction
+        mock_engine.predict.return_value = _result(likelihood=0.0, confidence=Confidence.LOW)
+
+        mock_recording_service = MagicMock()
+
+        cycle = MonitoringCycle(
+            prediction_engine=mock_engine,
+            stream_target_repo=mock_repos["target_repo"],
+            recording_session_repo=mock_repos["session_repo"],
+            result_store=result_store,
+            queue_planner=mock_queue_planner,
+            logger=logger,
+            loop_interval_seconds=3600,
+            period_days=30.0,
+            event_bus=MagicMock(),
+            recording_service=mock_recording_service,
+        )
+
+        # Phase 1: build initial snapshots — must be IDLE
+        cycle._build_initial_snapshots()
+        snap = cycle.get_snapshot("t1")
+        assert snap is not None
+        assert snap.state == MonitoringState.IDLE
+        assert snap.current_recording_session_id is None
+
+        # Phase 2: simulate a fresh live check result
+        from app.infrastructure.resolvers.result import ResolveResult
+        live_result = ResolveResult(
+            is_live=True,
+            stream_url="https://live-stream.example.com/stream.m3u8",
+        )
+        # Manually inject into result store, then run one cycle
+        result_store.store(target.id, live_result)
+
+        with patch(
+            "app.application.orchestrators.monitoring_cycle.utc_now",
+            return_value=NOW,
+        ):
+            cycle._run_one_cycle()
+
+        # Phase 3: the cycle should have consumed the result and
+        # triggered start_recording on the recording service
+        assert mock_recording_service.start_recording.called, (
+            "start_recording should have been called after live result"
+        )
+        call_args = mock_recording_service.start_recording.call_args
+        assert call_args.kwargs["stream_target_id"] == "t1"
+
+        # In-memory snapshot should now show recording state
+        snap = cycle.get_snapshot("t1")
+        assert snap is not None
+        assert snap.state == MonitoringState.RECORDING
+
+    def test_no_stale_session_produces_idle_no_last_live(
+        self, mock_repos, mock_engine, mock_queue_planner, result_store, logger,
+    ) -> None:
+        """Target with no sessions at all produces IDLE with None last_live_at."""
+        target = _target(id="t1")
+        mock_repos["target_repo"].list_all.return_value = [target]
+        mock_repos["session_repo"].list_by_target.return_value = []
+
+        cycle = MonitoringCycle(
+            prediction_engine=mock_engine,
+            stream_target_repo=mock_repos["target_repo"],
+            recording_session_repo=mock_repos["session_repo"],
+            result_store=result_store,
+            queue_planner=mock_queue_planner,
+            logger=logger,
+            loop_interval_seconds=3600,
+            period_days=30.0,
+        )
+        cycle._build_initial_snapshots()
+
+        snap = cycle.get_snapshot("t1")
+        assert snap is not None
+        assert snap.state == MonitoringState.IDLE
+        assert snap.current_recording_session_id is None
+        assert snap.last_live_at is None
+
+    def test_multiple_targets_only_stale_ones_start_idle(
+        self, mock_repos, mock_engine, mock_queue_planner, result_store, logger,
+    ) -> None:
+        """Multiple targets: ALL get IDLE regardless of stale sessions."""
+        from app.domain.recording.session import RecordingSession
+        from app.domain.shared.types import RecordingStatus
+
+        t1 = _target(id="t1")
+        t2 = _target(id="t2")
+        mock_repos["target_repo"].list_all.return_value = [t1, t2]
+
+        stale = RecordingSession(
+            id="stale",
+            stream_target_id="t1",
+            started_at=NOW - timedelta(hours=1),
+            ended_at=None,
+            status=RecordingStatus.RECORDING,
+            source_platform=Platform.TWITCH,
+            stream_title=None,
+            detected_by_queue=None,
+            detection_latency_seconds=None,
+            scheduled_hint_delay_minutes=None,
+            split_reason=None,
+            error_code=None,
+            error_message=None,
+            created_at=NOW - timedelta(hours=1),
+            updated_at=NOW - timedelta(hours=1),
+        )
+
+        def list_by_target(target_id: str):
+            return [stale] if target_id == "t1" else []
+
+        mock_repos["session_repo"].list_by_target.side_effect = list_by_target
+
+        cycle = MonitoringCycle(
+            prediction_engine=mock_engine,
+            stream_target_repo=mock_repos["target_repo"],
+            recording_session_repo=mock_repos["session_repo"],
+            result_store=result_store,
+            queue_planner=mock_queue_planner,
+            logger=logger,
+            loop_interval_seconds=3600,
+            period_days=30.0,
+        )
+        cycle._build_initial_snapshots()
+
+        for tid in ("t1", "t2"):
+            snap = cycle.get_snapshot(tid)
+            assert snap is not None
+            assert snap.state == MonitoringState.IDLE, f"{tid} should be IDLE"
+            assert snap.current_recording_session_id is None
+
+
+# ======================================================================
+# Resolve result coherence — next_check_at / queue_band must be
+# consistent with the resolved outcome
+# ======================================================================
+
+
+class TestResolveResultCoherence:
+    """Direct unit tests for ``_apply_resolve_result``.
+
+    These tests call the method directly with controlled inputs rather
+    than going through the full cycle — this avoids the dependency on
+    ``event_bus`` (which gates Phase B) and produces more focused
+    assertions on the coherence fix.
+    """
+
+    # ── Helpers ───────────────────────────────────────────────────
+
+    def _apply(
+        self,
+        cycle: MonitoringCycle,
+        snapshot: MonitoringSnapshot,
+        is_live: bool,
+        stream_url: str | None = None,
+        is_favorite: bool = False,
+        now: datetime = NOW,
+    ) -> MonitoringSnapshot:
+        """Thin wrapper around ``_apply_resolve_result``."""
+        from app.infrastructure.resolvers.result import ResolveResult
+
+        result = ResolveResult(
+            is_live=is_live,
+            stream_url=stream_url,
+        )
+        target = _target(id=snapshot.stream_target_id, favorite=is_favorite)
+        return cycle._apply_resolve_result(snapshot, result, now, target)
+
+    # ── Live resolve ────────────────────────────────────────────────
+
+    def test_live_resolve_sets_fast_band_and_near_fast_next_check(
+        self, cycle,
+    ) -> None:
+        """Live resolve overwrites stale MEDIUM queue_band/next_check_at
+        with FAST values."""
+        stale = _snapshot(
+            stream_target_id="t1",
+            state=MonitoringState.IDLE,
+            queue_band=QueueBand.MEDIUM,
+            current_likelihood=0.5,
+            next_check_at=NOW + timedelta(seconds=300),
+        )
+
+        with patch(
+            "app.application.orchestrators.monitoring_cycle.utc_now",
+            return_value=NOW,
+        ):
+            updated = self._apply(cycle, stale, is_live=True)
+
+        assert updated.state == MonitoringState.RECORDING
+        assert updated.current_likelihood == 1.0
+        assert updated.queue_band == QueueBand.FAST
+        # FAST interval = 60s, jitter ±15% = ±9s → range [51, 69]
+        assert updated.next_check_at is not None
+        assert NOW + timedelta(seconds=50) <= updated.next_check_at <= NOW + timedelta(seconds=70), (
+            f"next_check_at {updated.next_check_at} outside FAST range"
+        )
+        # last_checked_at was bumped
+        assert updated.last_checked_at == NOW
+        # resolved_stream_url was set
+        assert updated.resolved_stream_url is None  # no url passed in helper
+
+    def test_live_resolve_with_favorite_target(
+        self, cycle,
+    ) -> None:
+        """Even favourite targets get FAST band after live resolve —
+        likelihood=1.0 exceeds the fast threshold regardless."""
+        stale = _snapshot(
+            stream_target_id="t1",
+            state=MonitoringState.IDLE,
+            queue_band=QueueBand.MEDIUM,
+            current_likelihood=0.5,
+            next_check_at=NOW + timedelta(seconds=300),
+        )
+
+        with patch(
+            "app.application.orchestrators.monitoring_cycle.utc_now",
+            return_value=NOW,
+        ):
+            updated = self._apply(cycle, stale, is_live=True, is_favorite=True,
+                                  stream_url="https://example.com/stream.m3u8")
+
+        assert updated.state == MonitoringState.RECORDING
+        assert updated.current_likelihood == 1.0
+        assert updated.queue_band == QueueBand.FAST
+        assert updated.resolved_stream_url == "https://example.com/stream.m3u8"
+
+    # ── Offline resolve ─────────────────────────────────────────────
+
+    def test_offline_resolve_sets_slow_band(
+        self, cycle,
+    ) -> None:
+        """Offline resolve overwrites stale FAST timing with SLOW values."""
+        stale = _snapshot(
+            stream_target_id="t1",
+            state=MonitoringState.IDLE,
+            queue_band=QueueBand.FAST,
+            current_likelihood=0.95,
+            next_check_at=NOW + timedelta(seconds=60),
+        )
+
+        with patch(
+            "app.application.orchestrators.monitoring_cycle.utc_now",
+            return_value=NOW,
+        ):
+            updated = self._apply(cycle, stale, is_live=False)
+
+        assert updated.state == MonitoringState.IDLE
+        assert updated.current_likelihood == 0.0
+        assert updated.queue_band == QueueBand.SLOW
+        # SLOW interval = 900s, jitter ±15% = ±135s → range [765, 1035]
+        assert updated.next_check_at is not None
+        assert NOW + timedelta(seconds=760) <= updated.next_check_at <= NOW + timedelta(seconds=1040), (
+            f"next_check_at {updated.next_check_at} outside SLOW range"
+        )
+        # last_live_at is preserved (not bumped) for offline resolve
+        assert updated.last_live_at == stale.last_live_at
+        # resolved_stream_url is cleared
+        assert updated.resolved_stream_url is None
+
+    def test_offline_resolve_with_favorite_target(
+        self, cycle,
+    ) -> None:
+        """Favourite targets get at least MEDIUM band even after offline
+        resolve — the favourite floor prevents demotion to SLOW."""
+        stale = _snapshot(
+            stream_target_id="t1",
+            state=MonitoringState.IDLE,
+            queue_band=QueueBand.MEDIUM,
+            current_likelihood=0.5,
+            next_check_at=NOW + timedelta(seconds=300),
+        )
+
+        with patch(
+            "app.application.orchestrators.monitoring_cycle.utc_now",
+            return_value=NOW,
+        ):
+            updated = self._apply(cycle, stale, is_live=False, is_favorite=True)
+
+        assert updated.state == MonitoringState.IDLE
+        assert updated.current_likelihood == 0.0
+        # Favourite floor → at least MEDIUM, never SLOW
+        assert updated.queue_band in (QueueBand.MEDIUM, QueueBand.FAST), (
+            f"Expected at least MEDIUM for favourite, got {updated.queue_band}"
+        )
 
 
 # ======================================================================

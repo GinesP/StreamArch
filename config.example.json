@@ -17,5 +17,6 @@
     "recording_segment_enabled": false,
     "recording_segment_time_seconds": 1800,
     "recording_per_stream_directory": false,
-    "recording_convert_to_mp4": true
+    "recording_convert_to_mp4": true,
+    "user_timezone": "Europe/Madrid"
 }

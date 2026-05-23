@@ -148,41 +148,34 @@ class MonitoringCycle:
     def _build_initial_snapshots(self) -> None:
         """Load all targets and build initial in-memory snapshots.
 
-        For targets with an active recording session, the snapshot
-        reflects RECORDING state so the cycle can manage it.
+        **Important**: Startup NEVER restores ``RECORDING`` state from
+        persisted sessions — after a restart the ffmpeg process is gone.
+        The snapshot always starts as ``IDLE``, preserving only historical
+        signal (``last_live_at``).  The first fresh live check will
+        transition the snapshot to ``RECORDING`` normally.
         """
         targets = self._target_repo.list_all()
         now = utc_now()
 
         for target in targets:
-            # Check for an active recording session
+            # Preserve historical live timestamp if available — but
+            # do NOT assume a live stream is ongoing after restart.
             sessions = self._session_repo.list_by_target(target.id)
-            active_session = next(
-                (s for s in sessions if s.is_active),
+            last_live = next(
+                (s.started_at for s in sessions if s.is_active),
                 None,
             )
 
-            if active_session is not None:
-                state = MonitoringState.RECORDING
-                recording_session_id = active_session.id
-                likelihood = 1.0
-                last_live_at = active_session.started_at
-            else:
-                state = MonitoringState.IDLE
-                recording_session_id = None
-                likelihood = 0.0
-                last_live_at = None
-
             self._snapshots[target.id] = MonitoringSnapshot(
                 stream_target_id=target.id,
-                state=state,
+                state=MonitoringState.IDLE,
                 queue_band=None,
-                current_likelihood=likelihood,
+                current_likelihood=0.0,
                 current_confidence=Confidence.LOW,
                 next_check_at=None,
                 last_checked_at=None,
-                last_live_at=last_live_at,
-                current_recording_session_id=recording_session_id,
+                last_live_at=last_live,
+                current_recording_session_id=None,
                 resolved_stream_url=None,
                 last_error_code=None,
                 last_error_message=None,
@@ -190,8 +183,8 @@ class MonitoringCycle:
             )
 
             # Prime last-known state cache
-            self._last_known_state[target.id] = state
-            self._last_known_live[target.id] = (state == MonitoringState.RECORDING)
+            self._last_known_state[target.id] = MonitoringState.IDLE
+            self._last_known_live[target.id] = False
 
         self._logger.info(
             "Built %d initial in-memory snapshots", len(self._snapshots)
@@ -292,7 +285,7 @@ class MonitoringCycle:
                 result = self._result_store.consume(target.id)
                 if result is not None:
                     snapshot = self._apply_resolve_result(
-                        snapshot, result, now,
+                        snapshot, result, now, target,
                     )
                     self._snapshots[target.id] = snapshot
 
@@ -443,12 +436,32 @@ class MonitoringCycle:
             _now=now,
         )
 
-        # ── Determine the next check time (with jitter) ──────────
+        # ── Determine interval and queue band ──────────────────
         interval = get_interval_seconds(result.likelihood, target.favorite)
         jittered = apply_jitter(interval)
-        next_check_at = now + timedelta(seconds=jittered)
-
         queue_band = get_queue_band(result.likelihood, target.favorite)
+
+        # ── Determine next check time ──────────────────────────
+        # Only push the deadline forward when we actually enqueue a check.
+        # Preserving existing next_check_at when skipping avoids the
+        # perpetual "0 enqueued" bug where every cycle resets the timer.
+        if should_check:
+            next_check_at = now + timedelta(seconds=jittered)
+            self._queue_planner.enqueue(
+                target.id,
+                queue_band,
+                target.platform.value,
+            )
+            self._logger.debug(
+                "Enqueued %s (%s) — next check at %s",
+                target.id, target.handle, next_check_at,
+            )
+        else:
+            next_check_at = snapshot.next_check_at
+            self._logger.debug(
+                "Skipped %s (%s) — next check at %s (not due yet)",
+                target.id, target.handle, next_check_at,
+            )
 
         # ── Update in-memory snapshot ────────────────────────────
         updated = MonitoringSnapshot(
@@ -473,16 +486,7 @@ class MonitoringCycle:
             self._last_known_state[target.id] = updated.state
             self._last_known_live[target.id] = updated.is_live
 
-        # ── Enqueue for async check if due ───────────────────────
-        if should_check:
-            self._queue_planner.enqueue(
-                target.id,
-                queue_band,
-                target.platform.value,
-            )
-            return True
-
-        return False
+        return should_check
 
     # ── Resolve result application ────────────────────────────────────
 
@@ -491,8 +495,14 @@ class MonitoringCycle:
         snapshot: MonitoringSnapshot,
         result: ResolveResult,
         now: datetime,
+        target: StreamTarget,
     ) -> MonitoringSnapshot:
-        """Merge a worker's resolve result into the in-memory snapshot."""
+        """Merge a worker's resolve result into the in-memory snapshot.
+
+        Computes a coherent ``queue_band`` and ``next_check_at`` from the
+        resolved outcome so the snapshot never shows contradictory state
+        (e.g. ``RECORDING`` + ``100%`` with a stale ``MEDIUM`` interval).
+        """
         if result.is_live:
             state = MonitoringState.RECORDING
             likelihood = 1.0
@@ -504,13 +514,19 @@ class MonitoringCycle:
             last_live_at = snapshot.last_live_at
             resolved_stream_url = None
 
+        # ── Coherent queue band and schedule for resolved outcome ──
+        interval = get_interval_seconds(likelihood, target.favorite)
+        jittered = apply_jitter(interval)
+        queue_band = get_queue_band(likelihood, target.favorite)
+        next_check_at = now + timedelta(seconds=jittered)
+
         return MonitoringSnapshot(
             stream_target_id=snapshot.stream_target_id,
             state=state,
-            queue_band=snapshot.queue_band,
+            queue_band=queue_band,
             current_likelihood=likelihood,
             current_confidence=snapshot.current_confidence,
-            next_check_at=snapshot.next_check_at,
+            next_check_at=next_check_at,
             last_checked_at=now,
             last_live_at=last_live_at,
             current_recording_session_id=snapshot.current_recording_session_id,

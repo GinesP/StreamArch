@@ -59,6 +59,12 @@ class AppConfig:
     # ── Database ─────────────────────────────────────────────────
     db_pool_size: int = field(default=1)
 
+    # ── User timezone ────────────────────────────────────────────
+    # IANA timezone name used for recording filenames and any
+    # user-facing formatted timestamps.  Defaults to Europe/Madrid.
+    # Examples: "America/New_York", "Europe/Madrid", "Asia/Tokyo".
+    user_timezone: str = field(default="Europe/Madrid")
+
     # ── Config example (unused internally, kept for discovery) ──
     recordings_dir: str = field(default="./data/recordings")
 

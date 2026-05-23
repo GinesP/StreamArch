@@ -9,7 +9,7 @@ cycle owns in-memory snapshots.  This test only verifies the recording
 lifecycle (sessions, artifacts, ffmpeg, events).
 """
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -479,3 +479,276 @@ class TestStopAll:
 
         runner.stop_all.assert_called_once()
         assert len(service._session_to_recording) == 0
+
+
+class TestFinalizeAllActiveSessions:
+    """RecordingService.finalize_all_active_sessions — safety net."""
+
+    def test_finalizes_orphaned_sessions(
+        self, service: RecordingService, session_repo: MagicMock
+    ) -> None:
+        """Sessions still RECORDING in the DB are aborted."""
+        from app.domain.recording.session import RecordingSession
+        from app.domain.shared.types import RecordingStatus
+
+        active = RecordingSession(
+            id="orphan-1",
+            stream_target_id="t1",
+            started_at=NOW - timedelta(hours=1),
+            ended_at=None,
+            status=RecordingStatus.RECORDING,
+            source_platform=Platform.TWITCH,
+            stream_title=None,
+            detected_by_queue=None,
+            detection_latency_seconds=None,
+            scheduled_hint_delay_minutes=None,
+            split_reason=None,
+            error_code=None,
+            error_message=None,
+            created_at=NOW - timedelta(hours=1),
+            updated_at=NOW - timedelta(hours=1),
+        )
+        completed = RecordingSession(
+            id="done-1",
+            stream_target_id="t1",
+            started_at=NOW - timedelta(hours=2),
+            ended_at=NOW - timedelta(hours=1, minutes=30),
+            status=RecordingStatus.COMPLETED,
+            source_platform=Platform.TWITCH,
+            stream_title=None,
+            detected_by_queue=None,
+            detection_latency_seconds=None,
+            scheduled_hint_delay_minutes=None,
+            split_reason=None,
+            error_code=None,
+            error_message=None,
+            created_at=NOW - timedelta(hours=2),
+            updated_at=NOW - timedelta(hours=1, minutes=30),
+        )
+        session_repo.list_all.return_value = [active, completed]
+
+        count = service.finalize_all_active_sessions(reason="test_shutdown")
+
+        assert count == 1
+        # The active session should have been saved with ABORTED status
+        save_calls = [
+            call for call in session_repo.save.call_args_list
+            if call[0][0].id == "orphan-1"
+        ]
+        assert len(save_calls) >= 1
+        saved = save_calls[-1][0][0]
+        assert saved.status == RecordingStatus.ABORTED
+        assert saved.split_reason == "test_shutdown"
+        assert saved.ended_at is not None
+
+    def test_no_active_sessions_returns_zero(
+        self, service: RecordingService, session_repo: MagicMock
+    ) -> None:
+        """When all sessions are already terminal, returns 0."""
+        from app.domain.recording.session import RecordingSession
+        from app.domain.shared.types import RecordingStatus
+
+        finished = RecordingSession(
+            id="done-1",
+            stream_target_id="t1",
+            started_at=NOW - timedelta(hours=2),
+            ended_at=NOW - timedelta(hours=1),
+            status=RecordingStatus.COMPLETED,
+            source_platform=Platform.TWITCH,
+            stream_title=None,
+            detected_by_queue=None,
+            detection_latency_seconds=None,
+            scheduled_hint_delay_minutes=None,
+            split_reason=None,
+            error_code=None,
+            error_message=None,
+            created_at=NOW - timedelta(hours=2),
+            updated_at=NOW - timedelta(hours=1),
+        )
+        session_repo.list_all.return_value = [finished]
+
+        count = service.finalize_all_active_sessions()
+        assert count == 0
+
+    def test_stop_all_finalizes_sessions(
+        self, service: RecordingService, session_repo: MagicMock, runner: MagicMock
+    ) -> None:
+        """stop_all calls finalize_all_active_sessions internally."""
+        from app.domain.recording.session import RecordingSession
+        from app.domain.shared.types import RecordingStatus
+
+        orphan = RecordingSession(
+            id="orphan-2",
+            stream_target_id="t1",
+            started_at=NOW - timedelta(hours=1),
+            ended_at=None,
+            status=RecordingStatus.RECORDING,
+            source_platform=Platform.TWITCH,
+            stream_title=None,
+            detected_by_queue=None,
+            detection_latency_seconds=None,
+            scheduled_hint_delay_minutes=None,
+            split_reason=None,
+            error_code=None,
+            error_message=None,
+            created_at=NOW - timedelta(hours=1),
+            updated_at=NOW - timedelta(hours=1),
+        )
+        session_repo.list_all.return_value = [orphan]
+
+        # start a recording so there's a runner mapping too
+        with patch("app.application.services.recording_service.utc_now", return_value=NOW):
+            service.start_recording("t1", "url")
+
+        service.stop_all()
+
+        runner.stop_all.assert_called_once()
+        assert len(service._session_to_recording) == 0
+        # orphan should have gone through finalize_all_active_sessions
+        assert session_repo.save.called
+
+
+class TestOnRunnerExit:
+    """RecordingService._on_runner_exit — unexpected ffmpeg exit."""
+
+    def test_finalizes_session_on_unexpected_exit(
+        self, service: RecordingService, session_repo: MagicMock, artifact_repo: MagicMock,
+    ) -> None:
+        """When ffmpeg exits unexpectedly, the session is marked as FAILED."""
+        from app.domain.recording.session import RecordingSession
+        from app.domain.shared.types import RecordingStatus, ArtifactStatus, ArtifactType
+        from app.domain.recording.artifacts import RecordingArtifact
+
+        session = RecordingSession(
+            id="session-exit-1",
+            stream_target_id="t1",
+            started_at=NOW - timedelta(minutes=10),
+            ended_at=None,
+            status=RecordingStatus.RECORDING,
+            source_platform=Platform.TWITCH,
+            stream_title=None,
+            detected_by_queue=None,
+            detection_latency_seconds=None,
+            scheduled_hint_delay_minutes=None,
+            split_reason=None,
+            error_code=None,
+            error_message=None,
+            created_at=NOW - timedelta(minutes=10),
+            updated_at=NOW - timedelta(minutes=10),
+        )
+        session_repo.get.return_value = session
+        artifact_repo.list_by_session.return_value = []
+
+        with patch("app.application.services.recording_service.utc_now", return_value=NOW):
+            service._on_runner_exit("session-exit-1", "runner-recording-id-xxx")
+
+        assert session.status == RecordingStatus.FAILED
+        assert session.error_code == "FFMPEG_EXIT"
+        assert session.ended_at is not None
+        # Should save at least once with FAILED status
+        save_calls = [
+            call for call in session_repo.save.call_args_list
+            if call[0][0].id == "session-exit-1"
+        ]
+        assert len(save_calls) >= 1
+        saved = save_calls[-1][0][0]
+        assert saved.status == RecordingStatus.FAILED
+
+    def test_runner_exit_already_finalized_is_noop(
+        self, service: RecordingService, session_repo: MagicMock,
+    ) -> None:
+        """If the session is already finished, on_runner_exit is a no-op."""
+        from app.domain.recording.session import RecordingSession
+        from app.domain.shared.types import RecordingStatus
+
+        session = RecordingSession(
+            id="session-done",
+            stream_target_id="t1",
+            started_at=NOW - timedelta(hours=2),
+            ended_at=NOW - timedelta(hours=1),
+            status=RecordingStatus.COMPLETED,
+            source_platform=Platform.TWITCH,
+            stream_title=None,
+            detected_by_queue=None,
+            detection_latency_seconds=None,
+            scheduled_hint_delay_minutes=None,
+            split_reason=None,
+            error_code=None,
+            error_message=None,
+            created_at=NOW - timedelta(hours=2),
+            updated_at=NOW - timedelta(hours=1),
+        )
+        session_repo.get.return_value = session
+
+        service._on_runner_exit("session-done", "runner-id")
+
+        # Should not call save for a completed session
+        completed_saves = [
+            call for call in session_repo.save.call_args_list
+            if call[0][0].id == "session-done"
+        ]
+        assert len(completed_saves) == 0
+
+    def test_runner_exit_unknown_session(
+        self, service: RecordingService, session_repo: MagicMock,
+    ) -> None:
+        """If the session doesn't exist in DB, on_runner_exit is a no-op."""
+        session_repo.get.return_value = None
+        # Should not raise
+        service._on_runner_exit("nonexistent", "runner-id")
+
+    def test_runner_exit_updates_artifact(
+        self, service: RecordingService, session_repo: MagicMock,
+        artifact_repo: MagicMock,
+    ) -> None:
+        """The RAW_TS artifact is marked READY on unexpected exit."""
+        from app.domain.recording.session import RecordingSession
+        from app.domain.shared.types import RecordingStatus, ArtifactStatus, ArtifactType
+        from app.domain.recording.artifacts import RecordingArtifact
+
+        session = RecordingSession(
+            id="session-exit-2",
+            stream_target_id="t1",
+            started_at=NOW - timedelta(minutes=10),
+            ended_at=None,
+            status=RecordingStatus.RECORDING,
+            source_platform=Platform.TWITCH,
+            stream_title=None,
+            detected_by_queue=None,
+            detection_latency_seconds=None,
+            scheduled_hint_delay_minutes=None,
+            split_reason=None,
+            error_code=None,
+            error_message=None,
+            created_at=NOW - timedelta(minutes=10),
+            updated_at=NOW - timedelta(minutes=10),
+        )
+        session_repo.get.return_value = session
+
+        ts_artifact = RecordingArtifact(
+            id="art-exit-1",
+            recording_session_id="session-exit-2",
+            artifact_type=ArtifactType.RAW_TS,
+            path="/data/recordings/streamer/exit_test.ts",
+            container_format=ContainerFormat.TS,
+            status=ArtifactStatus.WRITING,
+            size_bytes=1_000_000,
+            duration_seconds=None,
+            checksum=None,
+            created_at=NOW - timedelta(minutes=10),
+            updated_at=NOW - timedelta(minutes=10),
+        )
+        artifact_repo.list_by_session.return_value = [ts_artifact]
+
+        with patch("app.application.services.recording_service.utc_now", return_value=NOW):
+            service._on_runner_exit("session-exit-2", "runner-id")
+
+        # The artifact should be saved with READY status
+        artifact_saves = [
+            call for call in artifact_repo.save.call_args_list
+            if call[0][0].id == "art-exit-1"
+        ]
+        assert len(artifact_saves) >= 1
+        saved_artifact = artifact_saves[-1][0][0]
+        assert saved_artifact.status == ArtifactStatus.READY
+        assert saved_artifact.updated_at == NOW
