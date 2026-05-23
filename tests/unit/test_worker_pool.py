@@ -118,9 +118,9 @@ class TestWorkerProcessing:
         ]
         pool.start()
 
-        # Give the worker a moment to process.
+        # Give the worker time to process (includes up to 3 s jitter).
         import time
-        time.sleep(0.3)
+        time.sleep(4.0)
 
         # Worker should have:
         #   1. dequeued from FAST
@@ -149,7 +149,7 @@ class TestWorkerProcessing:
         pool.start()
 
         import time
-        time.sleep(0.3)
+        time.sleep(4.0)
 
         # Semaphore should still be released despite the error.
         platform_semaphores.release_sync.assert_called_with("twitch")
@@ -189,14 +189,15 @@ class TestWorkerProcessing:
         pool.start()
 
         import time
-        time.sleep(0.5)
+        time.sleep(12.0)
 
         assert live_check_service.check_stream.call_count == 3
+        # Order is non-deterministic because of the random jitter delay.
         live_check_service.check_stream.assert_has_calls([
             call("s1"),
             call("s2"),
             call("s3"),
-        ])
+        ], any_order=True)
         pool.stop()
 
 

@@ -19,6 +19,7 @@ Worker allocation
 """
 
 import logging
+import random
 import threading
 import time
 from collections.abc import Callable
@@ -225,6 +226,10 @@ class WorkerPool:
                         stream_id, band.value,
                     )
                     continue
+
+                # Small random delay so external observers don't see
+                # perfectly regular check patterns.
+                time.sleep(random.uniform(0.0, 3.0))
 
                 self._logger.info(
                     "Checking stream %s (%s band)",
