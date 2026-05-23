@@ -15,6 +15,7 @@ interface BandDepth {
 interface CycleStats {
   enqueued: Record<string, number>;
   waiting: Record<string, number>;
+  workers: Record<string, number>;
   cycle_timestamp: string;
 }
 
@@ -126,6 +127,18 @@ export function Dashboard() {
             </span>
             <span className="cycle-stat" style={{ color: BAND_COLORS.slow }}>
               S {cycleStats.waiting.slow ?? 0}
+            </span>
+          </div>
+          <div className="cycle-stats-row">
+            <span className="cycle-stats-label">Workers</span>
+            <span className="cycle-stat" style={{ color: BAND_COLORS.fast }}>
+              F {cycleStats.workers.fast ?? 0}
+            </span>
+            <span className="cycle-stat" style={{ color: BAND_COLORS.medium }}>
+              M {cycleStats.workers.medium ?? 0}
+            </span>
+            <span className="cycle-stat" style={{ color: BAND_COLORS.slow }}>
+              S {cycleStats.workers.slow ?? 0}
             </span>
           </div>
           <div className="cycle-stats-row">
