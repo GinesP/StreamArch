@@ -506,9 +506,9 @@ class MonitoringCycle:
             self._cycle_enqueued[queue_band] = (
                 self._cycle_enqueued.get(queue_band, 0) + 1
             )
-            self._logger.debug(
-                "Enqueued %s (%s) — next check at %s",
-                target.id, target.handle, next_check_at,
+            self._logger.info(
+                "Dispatched %s (%s) to queue %s — next check at %s",
+                target.id, target.handle, queue_band.value, next_check_at,
             )
         else:
             next_check_at = runtime_state.next_check_at

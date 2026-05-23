@@ -226,9 +226,20 @@ class WorkerPool:
                     )
                     continue
 
+                self._logger.info(
+                    "Checking stream %s (%s band)",
+                    stream_id, band.value,
+                )
                 self._semaphores.acquire_sync(platform_key)
                 try:
                     result = self._live_check_service.check_stream(stream_id)
+                    status = "LIVE" if result.is_live else "offline"
+                    self._logger.info(
+                        "Stream %s is %s (url=%s)",
+                        stream_id,
+                        status,
+                        result.stream_url or "n/a",
+                    )
                     if self._result_store is not None:
                         self._result_store.store(stream_id, result)
                 finally:

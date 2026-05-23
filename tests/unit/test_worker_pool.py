@@ -7,6 +7,7 @@ from unittest.mock import MagicMock, call
 import pytest
 
 from app.domain.shared.types import QueueBand
+from app.infrastructure.resolvers.result import ResolveResult
 from app.infrastructure.scheduler.worker_pool import WorkerPool
 
 
@@ -29,7 +30,13 @@ def queue_planner() -> MagicMock:
 
 @pytest.fixture
 def live_check_service() -> MagicMock:
-    return MagicMock()
+    m = MagicMock()
+    # Return a concrete ResolveResult so .is_live and .stream_url don't
+    # generate nested MagicMocks that trip the new logging in worker_pool.
+    m.check_stream.return_value = ResolveResult(
+        is_live=False, stream_url=None,
+    )
+    return m
 
 
 @pytest.fixture
