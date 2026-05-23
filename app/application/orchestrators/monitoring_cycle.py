@@ -93,7 +93,7 @@ class MonitoringCycle:
         result_store: LiveCheckResultStore,
         queue_planner: QueuePlanner,
         logger: logging.Logger,
-        loop_interval_seconds: int = 15,
+        loop_interval_seconds: int = 180,
         period_days: float = 30.0,
         event_bus: EventBus | None = None,
         worker_pool: WorkerPool | None = None,
@@ -288,6 +288,26 @@ class MonitoringCycle:
         """
         targets = self._target_repo.list_all()
         enabled = [t for t in targets if t.enabled]
+
+        # Sort by priority (highest likelihood first) so streams with
+        # the highest chance of being live are checked and enqueued
+        # before less-urgent ones.
+        enabled.sort(
+            key=lambda t: self._runtime_states.get(
+                t.id,
+                MonitoringRuntimeState(
+                    stream_target_id=t.id,
+                    next_check_at=None,
+                    last_checked_at=None,
+                    last_live_at=None,
+                    is_live=False,
+                    active_recording_session_id=None,
+                    previous_likelihood=0.0,
+                    updated_at=utc_now(),
+                ),
+            ).previous_likelihood,
+            reverse=True,
+        )
 
         # Reset per-cycle enqueue counters
         self._cycle_enqueued = {band: 0 for band in QueueBand}
@@ -749,8 +769,18 @@ class MonitoringCycle:
             for band in QueueBand
         }
 
+        # Build workers-per-band payload
+        workers_payload: dict[str, int] = {
+            band.value: 0 for band in QueueBand
+        }
+        if self._worker_pool is not None:
+            wc = self._worker_pool.worker_count
+            for band in QueueBand:
+                workers_payload[band.value] = wc.get(band, 0)
+
         self._event_bus.publish("queue.cycle_stats", {
             "enqueued": enqueued_payload,
             "waiting": waiting,
+            "workers": workers_payload,
             "cycle_timestamp": now.isoformat(),
         })
