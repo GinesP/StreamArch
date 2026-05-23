@@ -457,6 +457,66 @@ class MonitoringCycle:
             return True
         return (now - state.last_checked_at).total_seconds() > 60
 
+    # ── Live detection callback (called from WorkerPool thread) ─────────
+
+    def _on_live_detected(self, stream_id: str, stream_url: str | None) -> None:
+        """Handle a live detection immediately, without waiting for the
+        next monitoring cycle.
+
+        Called from worker threads via ``WorkerPool.live_callback``.
+        Starts recording, updates runtime state, emits events.
+        """
+        if stream_url is None:
+            return
+
+        target = self._find_target(stream_id)
+        if target is None:
+            return
+
+        now = utc_now()
+        runtime_state = self._get_or_create_runtime_state(stream_id, now)
+
+        # Avoid starting duplicate recordings
+        if runtime_state.active_recording_session_id is not None:
+            return
+
+        if self._recording_service is None:
+            return
+
+        try:
+            session_id = self._recording_service.start_recording(
+                stream_target_id=stream_id,
+                stream_url=stream_url,
+            )
+            runtime_state = self._with_recording_session(
+                runtime_state, session_id, now,
+            )
+            self._runtime_states[stream_id] = runtime_state
+            snapshot = self._build_snapshot(target, runtime_state=runtime_state, now=now)
+
+            # Update cache and emit status change event
+            self._last_known_state[stream_id] = snapshot.state
+            self._last_known_live[stream_id] = runtime_state.is_live
+
+            if self._event_bus is not None:
+                self._event_bus.publish(
+                    "stream.status_changed",
+                    {
+                        "stream_id": stream_id,
+                        "state": snapshot.state.value,
+                        "queue_band": snapshot.queue_band.value
+                        if snapshot.queue_band else None,
+                        "likelihood": snapshot.current_likelihood,
+                        "confidence": snapshot.current_confidence.value,
+                        "ui_state": snapshot.state.value,
+                    },
+                )
+        except Exception:
+            self._logger.exception(
+                "Failed to start recording for %s (%s)",
+                stream_id, target.handle,
+            )
+
     # ── Per-target processing ─────────────────────────────────────────
 
     def _process_target(self, target: StreamTarget) -> bool:

@@ -192,6 +192,10 @@ def start_application(container: Container) -> None:
     # skip stale (non-due) items dequeued with a past deadline.
     container.worker_pool.due_checker = container.monitoring_cycle.is_stream_due
 
+    # Wire live-detection callback so workers start recording immediately
+    # when they detect a LIVE stream, without waiting for the next cycle.
+    container.worker_pool.live_callback = container.monitoring_cycle._on_live_detected
+
     # ── WebSocket server ──────────────────────────────────────────
     container.websocket_handler = WebSocketServer(
         host=container.config.ws_host,

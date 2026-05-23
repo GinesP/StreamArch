@@ -68,6 +68,7 @@ class WorkerPool:
         result_store=None,
         logger: logging.Logger | None = None,
         due_checker: Callable[[str], bool] | None = None,
+        live_callback: Callable[[str, str | None], None] | None = None,
     ) -> None:
         self._queue_planner = queue_planner
         self._live_check_service = live_check_service
@@ -75,6 +76,7 @@ class WorkerPool:
         self._result_store = result_store
         self._logger = logger or logging.getLogger(__name__)
         self._due_checker = due_checker
+        self._live_callback = live_callback
 
         # ── Internal state ────────────────────────────────────────────
         self._stop_event = threading.Event()
@@ -164,6 +166,15 @@ class WorkerPool:
     @due_checker.setter
     def due_checker(self, value: Callable[[str], bool] | None) -> None:
         self._due_checker = value
+
+    @property
+    def live_callback(self) -> Callable[[str, str | None], None] | None:
+        """Optional callback invoked immediately on live detection."""
+        return self._live_callback
+
+    @live_callback.setter
+    def live_callback(self, value: Callable[[str, str | None], None] | None) -> None:
+        self._live_callback = value
 
     # ── Allocation policy ─────────────────────────────────────────────
 
@@ -344,6 +355,10 @@ class WorkerPool:
                     )
                     if self._result_store is not None:
                         self._result_store.store(stream_id, result)
+                    # Immediate callback for live detections - bypasses
+                    # the monitoring cycle delay (up to 180s).
+                    if result.is_live and self._live_callback is not None:
+                        self._live_callback(stream_id, result.stream_url)
                 finally:
                     self._semaphores.release_sync(platform_key)
             except Exception:
