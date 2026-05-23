@@ -22,7 +22,6 @@ Flow per cycle
 """
 
 import logging
-import random
 import threading
 from datetime import datetime, timedelta
 
@@ -127,10 +126,7 @@ class MonitoringCycle:
         # ── Per-cycle enqueue counters ─────────────────────────
         self._cycle_enqueued: dict[QueueBand, int] = {}
 
-        # ── Max stagger for initial checks (seconds) ───────────
-        # Spreads the first monitoring cycle to avoid a startup
-        # storm of simultaneous live checks on all targets.
-        self._initial_stagger_max: int = 900  # = SLOW_BAND_INTERVAL
+
 
     # ── Lifecycle ─────────────────────────────────────────────────────
 
@@ -168,9 +164,9 @@ class MonitoringCycle:
         signal (``last_live_at``).  The first fresh live check will
         transition the derived snapshot to ``RECORDING`` normally.
 
-        **Staggering**: Each target's ``next_check_at`` is jittered
-        across ``[0, _initial_stagger_max]`` seconds to avoid a startup
-        storm of simultaneous checks.
+        All targets are set to ``next_check_at=now`` so the first cycle
+        queues them immediately.  Semaphores and the small worker pool
+        regulate actual concurrency — no artificial stagger is needed.
         """
         targets = self._target_repo.list_all()
         now = utc_now()
@@ -181,13 +177,9 @@ class MonitoringCycle:
             sessions = self._session_repo.list_by_target(target.id)
             last_live = sessions[0].started_at if sessions else None
 
-            # Jittered first deadline — spread across the stagger window
-            # so N targets don't all hit the queue at once on startup.
-            stagger = random.randint(15, self._initial_stagger_max)
-
             self._runtime_states[target.id] = MonitoringRuntimeState(
                 stream_target_id=target.id,
-                next_check_at=now + timedelta(seconds=stagger),
+                next_check_at=now,
                 last_checked_at=None,
                 last_live_at=last_live,
                 is_live=False,
@@ -201,7 +193,7 @@ class MonitoringCycle:
             self._last_known_live[target.id] = False
 
         self._logger.info(
-            "Built %d initial in-memory runtime states with staggered first checks",
+            "Built %d initial in-memory runtime states; first check queued immediately",
             len(self._runtime_states),
         )
 
@@ -428,18 +420,23 @@ class MonitoringCycle:
     # ── Due validation (called from WorkerPool) ────────────────────────
 
     def is_stream_due(self, stream_id: str) -> bool:
-        """Lightweight memory check — is this stream target due for a
-        live check?
+        """Lightweight memory check — should this dequeued item be processed?
 
-        Returns ``True`` when there is no runtime state, when
-        ``next_check_at`` is ``None``, or when ``next_check_at <= now``.
-        Returns ``False`` only when the target has a future deadline.
+        A stream is considered *still due* unless it was checked very
+        recently by another worker.  This prevents redundant work when an
+        item sits in a queue for a long time and another worker already
+        processed it.
+
+        Returns ``False`` only when ``last_checked_at`` is recent
+        (within the last 60 seconds).
         """
         now = utc_now()
         state = self._runtime_states.get(stream_id)
         if state is None:
             return True
-        return state.next_check_at is None or state.next_check_at <= now
+        if state.last_checked_at is None:
+            return True
+        return (now - state.last_checked_at).total_seconds() > 60
 
     # ── Per-target processing ─────────────────────────────────────────
 
