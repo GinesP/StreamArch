@@ -156,6 +156,7 @@ def container(db_path, tmp_path) -> Container:
     )
     c.enable_monitoring_handler = EnableMonitoringHandler(
         stream_target_repo=c.stream_target_repo,
+        monitoring_cycle=mock_cycle,
     )
     c.mark_favorite_handler = MarkFavoriteHandler(
         stream_target_repo=c.stream_target_repo,
@@ -195,6 +196,8 @@ def container(db_path, tmp_path) -> Container:
     )
     c.force_check_handler = ForceCheckHandler(
         live_check_service=c.live_check_service,
+        result_store=MagicMock(),
+        monitoring_cycle=mock_cycle,
     )
     return c
 

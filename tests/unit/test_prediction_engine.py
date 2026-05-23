@@ -329,6 +329,7 @@ class TestPredictedWindow:
             previous_priority=0.05,
             session_count=1,
             period_days=60,
+            live_check_count=30,  # Past new-stream promotion
             _now=NOW,
         )
         if result.predicted_window_end and result.predicted_window_start:

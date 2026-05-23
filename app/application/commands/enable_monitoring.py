@@ -2,10 +2,11 @@
 
 When monitoring is enabled:
     - The stream target's ``enabled`` flag is set to ``True``.
-    - The monitoring snapshot is left untouched — the next monitoring
-      cycle will evaluate the target normally.
+    - The monitoring cycle is told to check the target immediately,
+      so the stream does not wait for its old timer to expire.
 """
 
+from app.application.orchestrators.monitoring_cycle import MonitoringCycle
 from app.domain.shared.types import utc_now
 from app.infrastructure.repositories.stream_target_repository import (
     StreamTargetRepository,
@@ -28,8 +29,13 @@ class EnableMonitoringCommand:
 class EnableMonitoringHandler:
     """Handles :class:`EnableMonitoringCommand` — enables monitoring."""
 
-    def __init__(self, stream_target_repo: StreamTargetRepository) -> None:
+    def __init__(
+        self,
+        stream_target_repo: StreamTargetRepository,
+        monitoring_cycle: MonitoringCycle,
+    ) -> None:
         self._target_repo = stream_target_repo
+        self._cycle = monitoring_cycle
 
     def handle(self, cmd: EnableMonitoringCommand) -> None:
         """Enable monitoring for *stream_id*.
@@ -54,3 +60,7 @@ class EnableMonitoringHandler:
         kwargs["enabled"] = True
         kwargs["updated_at"] = now
         self._target_repo.save(target.__class__(**kwargs))
+
+        # Force an immediate check so the stream doesn't wait for its
+        # old timer (which may be minutes/hours in the future).
+        self._cycle.force_next_check(cmd.stream_id)

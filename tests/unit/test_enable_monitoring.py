@@ -1,6 +1,7 @@
 """Tests for EnableMonitoringHandler."""
 
 import pytest
+from unittest.mock import MagicMock
 
 from app.application.commands.enable_monitoring import (
     EnableMonitoringCommand,
@@ -54,7 +55,10 @@ def repo(db_path) -> StreamTargetRepository:
 
 @pytest.fixture
 def handler(repo: StreamTargetRepository) -> EnableMonitoringHandler:
-    return EnableMonitoringHandler(stream_target_repo=repo)
+    return EnableMonitoringHandler(
+        stream_target_repo=repo,
+        monitoring_cycle=MagicMock(),
+    )
 
 
 class TestEnableMonitoringHandler:

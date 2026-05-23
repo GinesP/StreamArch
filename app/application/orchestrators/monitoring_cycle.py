@@ -220,6 +220,28 @@ class MonitoringCycle:
 
     # ── Public snapshot access ────────────────────────────────────────
 
+    def force_next_check(self, stream_id: str) -> None:
+        """Force *stream_id* to be checked on the next cycle.
+
+        Used when re-enabling monitoring or adding a new stream,
+        so the target does not wait for its timer to expire naturally.
+        """
+        now = utc_now()
+        state = self._runtime_states.get(stream_id)
+        if state is not None:
+            self._runtime_states[stream_id] = MonitoringRuntimeState(
+                stream_target_id=state.stream_target_id,
+                next_check_at=now,
+                last_checked_at=state.last_checked_at,
+                last_live_at=state.last_live_at,
+                is_live=state.is_live,
+                active_recording_session_id=state.active_recording_session_id,
+                previous_likelihood=state.previous_likelihood,
+                updated_at=now,
+                last_checked_count=state.last_checked_count,
+            )
+            self._logger.debug("Forced next check for %s", stream_id)
+
     def register_new_target(self, stream_id: str) -> None:
         """Register a runtime state for a newly added stream target.
 

@@ -44,6 +44,15 @@ DEEP_SLEEP_PRIORITY_THRESHOLD: float = 0.01
 DEEP_SLEEP_CHECK_THRESHOLD: int = 30
 """Minimum number of live checks before deep sleep is considered."""
 
+# ── New-stream promotion ──────────────────────────────────────────────
+
+NEW_STREAM_PROMOTION_CHECKS: int = 3
+"""Number of initial checks during which a stream with no history is
+promoted to MEDIUM interval instead of SLOW."""
+
+NEW_STREAM_PROMOTION_INTERVAL: int = 300
+"""Interval (seconds) for promoted new streams (same as MEDIUM)."""
+
 # ── Jitter ──────────────────────────────────────────────────────────
 
 JITTER_PCT: float = 0.15
@@ -103,6 +112,8 @@ def get_adjusted_interval(
     deep_sleep_priority_threshold: float = DEEP_SLEEP_PRIORITY_THRESHOLD,
     deep_sleep_check_threshold: int = DEEP_SLEEP_CHECK_THRESHOLD,
     favorite_max_interval: int = FAVORITE_MAX_INTERVAL,
+    new_stream_promotion_checks: int = NEW_STREAM_PROMOTION_CHECKS,
+    new_stream_promotion_interval: int = NEW_STREAM_PROMOTION_INTERVAL,
 ) -> int:
     """Return the adapted check interval for a given likelihood and
     historical priority.
@@ -110,6 +121,9 @@ def get_adjusted_interval(
     This matches StreamCap's ``get_adjusted_interval()`` behaviour:
     * Likelihood ≥ 0.9     → FAST (~60s)
     * Likelihood ≥ 0.5     → MEDIUM (~300s)
+    * **New stream**        → MEDIUM (~300s) — for the first N checks,
+      a newly added target is promoted so it gets reasonable attention
+      before the predictor has enough data to judge it.
     * Deep sleep           → DEEP (~2700s, 45 min) — only when
       priority_score is VERY low AND the stream has been checked
       enough times for the predictor to be confident.
@@ -128,6 +142,11 @@ def get_adjusted_interval(
         base = fast_interval
     elif effective >= medium_threshold:
         base = medium_interval
+    elif (live_check_count < new_stream_promotion_checks
+          and priority_score < medium_threshold):
+        # New stream promotion: give MEDIUM attention for the first
+        # few checks until the predictor gathers enough data.
+        base = new_stream_promotion_interval
     elif (priority_score < deep_sleep_priority_threshold
           and live_check_count >= deep_sleep_check_threshold):
         base = deep_sleep_interval

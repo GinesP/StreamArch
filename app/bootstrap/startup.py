@@ -216,6 +216,7 @@ def start_application(container: Container) -> None:
     )
     container.enable_monitoring_handler = EnableMonitoringHandler(
         stream_target_repo=container.stream_target_repo,
+        monitoring_cycle=container.monitoring_cycle,
     )
     container.mark_favorite_handler = MarkFavoriteHandler(
         stream_target_repo=container.stream_target_repo,
@@ -240,6 +241,8 @@ def start_application(container: Container) -> None:
     )
     container.force_check_handler = ForceCheckHandler(
         live_check_service=container.live_check_service,
+        result_store=container.live_check_result_store,
+        monitoring_cycle=container.monitoring_cycle,
     )
 
     # ── REST API server ──────────────────────────────────────────
