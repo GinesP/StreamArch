@@ -512,10 +512,7 @@ class MonitoringCycle:
             )
         else:
             next_check_at = runtime_state.next_check_at
-            self._logger.debug(
-                "Skipped %s (%s) — next check at %s (not due yet)",
-                target.id, target.handle, next_check_at,
-            )
+            # Skip is the common case — no need to log it.
 
         # ── Update in-memory runtime state ───────────────────────
         updated = MonitoringRuntimeState(
