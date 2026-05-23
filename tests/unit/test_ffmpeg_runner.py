@@ -66,7 +66,7 @@ class TestFFmpegRunnerStart:
         assert cmd[1] == "-y"
         assert cmd[2] == "-hide_banner"
 
-        # ── Input / network flags (StreamCapQT base) ────────────
+        # ── Input / network flags (original working profile) ───
         assert "-protocol_whitelist" in cmd
         assert "-rw_timeout" in cmd
         assert "-user_agent" in cmd
@@ -90,7 +90,7 @@ class TestFFmpegRunnerStart:
                       "-reconnect"):
             assert cmd.index(flag) < i_pos, f"{flag} should be before -i"
 
-        # ── Output flags (StreamCapQT base, after -i) ───────────
+        # ── Output flags (after -i) ──────────────────────────────
         assert "-sn" in cmd
         sn_pos = cmd.index("-sn")
         assert sn_pos > i_pos, "-sn should be after -i"

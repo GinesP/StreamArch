@@ -111,7 +111,7 @@ class FileManager:
             filepath = self._base_path / filename
 
         filepath.parent.mkdir(parents=True, exist_ok=True)
-        return filepath
+        return filepath.resolve()
 
     def ensure_directory(self) -> None:
         """Ensure the base recordings directory exists."""

@@ -13,8 +13,7 @@ Progress data is extracted from ffmpeg's stderr output by the
 
 Command-line flags
 ------------------
-The assembled ffmpeg command mirrors the proven base profile from
-StreamCapQT's ``app/core/media/ffmpeg_builders/base.py``::
+The assembled ffmpeg command uses the original StreamArch proven profile::
 
     ffmpeg -y                                       # overwrite
            -hide_banner                             # suppress banner
@@ -42,13 +41,6 @@ StreamCapQT's ``app/core/media/ffmpeg_builders/base.py``::
            -c:a copy                                 # no audio re-encode
            -f mpegts                                 # TS container
            <output_path>
-
-Flags deliberately excluded from StreamCapQT's base:
-* ``-v verbose``   — would flood stderr and interfere with progress parsing.
-* ``-loglevel error`` — would suppress progress output needed by the
-  :mod:`~app.infrastructure.ffmpeg.progress_parser` module.
-* ``-bufsize``     — only meaningful when encoding; no effect with ``-c copy``.
-* ``-re``          — input rate-control flag; irrelevant for live HLS sources.
 """
 
 import logging
@@ -81,12 +73,12 @@ _USER_AGENT: str = (
     "AppleWebKit/537.36 (KHTML, like Gecko) "
     "Chrome/130.0.6723.58 Mobile Safari/537.36"
 )
-"""Fixed mobile User-Agent matching StreamCapQT's profile (Android Chrome)."""
+"""Fixed mobile User-Agent (original StreamArch Chrome Android 14)."""
 
 _PROTOCOL_WHITELIST: str = (
     "crypto,file,http,https,tcp,tls,udp,rtp,rtmp,httpproxy"
 )
-"""Allowed network protocols for ffmpeg (StreamCapQT base profile)."""
+"""Allowed network protocols for ffmpeg (original StreamArch order)."""
 
 
 # ── Internal bookkeeping ───────────────────────────────────────────────
@@ -261,7 +253,7 @@ class FFmpegRunner:
             for name, value in headers.items():
                 cmd.extend(["-headers", f"{name}: {value}"])
 
-        # ── Input/network flags (StreamCapQT base profile) ──────
+        # ── Input/network flags (original working profile) ──────
         cmd.extend([
             "-protocol_whitelist", _PROTOCOL_WHITELIST,
             "-rw_timeout", "10000000",      # 10 s read/write timeout
@@ -296,10 +288,16 @@ class FFmpegRunner:
             # Segmented recording (StreamCapQT pattern)
             # Output path must use a template like file_%03d.ts
             cmd.extend([
+                "-c:v", "copy",
+                "-c:a", "copy",
+                "-map", "0",
                 "-f", "segment",
                 "-segment_time", str(segment_time_seconds),
                 "-segment_format", "mpegts",
                 "-reset_timestamps", "1",
+                "-mpegts_flags", "+resend_headers",
+                "-muxdelay", "0",
+                "-muxpreload", "0",
             ])
             # Append _%03d before extension for segment numbering
             stem, ext = os.path.splitext(output_path)
@@ -398,6 +396,7 @@ class FFmpegRunner:
             if progress is not None:
                 return progress
         return None
+
 
     def is_recording(self, recording_id: str) -> bool:
         """Check whether a recording is still active.

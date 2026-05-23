@@ -21,6 +21,7 @@ Worker allocation
 import logging
 import threading
 import time
+from collections.abc import Callable
 
 from app.domain.shared.types import QueueBand
 
@@ -57,12 +58,14 @@ class WorkerPool:
         platform_semaphores,
         result_store=None,
         logger: logging.Logger | None = None,
+        due_checker: Callable[[str], bool] | None = None,
     ) -> None:
         self._queue_planner = queue_planner
         self._live_check_service = live_check_service
         self._semaphores = platform_semaphores
         self._result_store = result_store
         self._logger = logger or logging.getLogger(__name__)
+        self._due_checker = due_checker
 
         # ── Internal state ────────────────────────────────────────────
         self._stop_event = threading.Event()
@@ -133,6 +136,15 @@ class WorkerPool:
     def worker_count(self) -> dict[QueueBand, int]:
         """Current worker count per band."""
         return {band: len(threads) for band, threads in self._workers.items()}
+
+    @property
+    def due_checker(self) -> Callable[[str], bool] | None:
+        """Optional callable to validate whether a dequeued stream is still due."""
+        return self._due_checker
+
+    @due_checker.setter
+    def due_checker(self, value: Callable[[str], bool] | None) -> None:
+        self._due_checker = value
 
     # ── Allocation policy ─────────────────────────────────────────────
 
@@ -205,6 +217,15 @@ class WorkerPool:
                     continue
 
                 stream_id, platform_key = item
+
+                # ── Due validation ──────────────────────────────────
+                if self._due_checker is not None and not self._due_checker(stream_id):
+                    self._logger.debug(
+                        "Discarding non-due item for stream %s (band=%s)",
+                        stream_id, band.value,
+                    )
+                    continue
+
                 self._semaphores.acquire_sync(platform_key)
                 try:
                     result = self._live_check_service.check_stream(stream_id)

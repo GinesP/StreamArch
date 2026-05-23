@@ -29,6 +29,17 @@ class StreamGetResolver(BaseResolver):
     def __init__(self, cookie_service: CookieService | None = None) -> None:
         super().__init__(platform=Platform.TIKTOK, cookie_service=cookie_service)
 
+    def _select_stream_url(self, stream_data) -> str:
+        """Choose the best stream URL, matching StreamCap's TikTok logic.
+
+        For TikTok, the direct FLV stream is preferred over HLS because
+        it connects immediately and avoids the need to parse HLS segments
+        (which may be delayed or empty).  Falls back to ``record_url``
+        when ``flv_url`` is not available.
+        """
+        flv_url = getattr(stream_data, "flv_url", None)
+        return flv_url if flv_url else stream_data.record_url
+
     def resolve(self, url: str) -> ResolveResult:
         """Resolve a TikTok live URL using streamget.
 
@@ -45,10 +56,11 @@ class StreamGetResolver(BaseResolver):
 
             return ResolveResult(
                 is_live=stream_data.is_live,
-                stream_url=stream_data.record_url,
+                stream_url=self._select_stream_url(stream_data),
                 title=stream_data.title,
                 anchor_name=stream_data.anchor_name,
                 m3u8_url=stream_data.m3u8_url,
+                flv_url=getattr(stream_data, "flv_url", None),
             )
         except NotImplementedError:
             raise

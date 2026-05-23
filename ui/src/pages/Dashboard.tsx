@@ -1,7 +1,7 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import type { StreamItem, QueueBand } from "../types";
 import * as streams from "../api/streams";
-import { WsClient } from "../api/ws";
+import { useWsStatus } from "../WsContext";
 import { StreamCard } from "../components/StreamCard";
 import { AddStreamModal } from "../components/AddStreamModal";
 import { QueueHealth } from "../components/QueueHealth";
@@ -12,23 +12,27 @@ interface BandDepth {
   color: string;
 }
 
+interface CycleStats {
+  enqueued: Record<string, number>;
+  waiting: Record<string, number>;
+  cycle_timestamp: string;
+}
+
 const BAND_COLORS: Record<string, string> = {
   fast: "var(--live)",
   medium: "var(--warning)",
   slow: "var(--idle)",
 };
 
-interface Props {
-  onWsStatus: (connected: boolean) => void;
-}
-
-export function Dashboard({ onWsStatus }: Props) {
+export function Dashboard() {
   const [items, setItems] = useState<StreamItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [showAddModal, setShowAddModal] = useState(false);
   const [queueBands, setQueueBands] = useState<BandDepth[]>([]);
-  const wsRef = useRef<WsClient | null>(null);
+  const [cycleStats, setCycleStats] = useState<CycleStats | null>(null);
+  const [enqueuedHistory, setEnqueuedHistory] = useState<number[]>([]);
+  const { connected, refreshKey, lastEnvelope } = useWsStatus();
 
   const fetchStreams = useCallback(async () => {
     try {
@@ -57,40 +61,32 @@ export function Dashboard({ onWsStatus }: Props) {
     }
   }, []);
 
-  // Initial fetch
+  // Initial fetch + refresh on WS events (refreshKey changes)
   useEffect(() => {
     fetchStreams();
-  }, [fetchStreams]);
+  }, [fetchStreams, refreshKey]);
 
-  // WebSocket for real-time updates
+  // When core disconnects, invalidate stale dashboard data so no card
+  // shows a stale "recording" state or old snapshot data.
   useEffect(() => {
-    const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
-    const wsUrl = `${proto}//${window.location.host}/ws/events`;
-    const client = new WsClient(wsUrl,
-      (envelope) => {
-        // Refresh stream data on relevant events
-        const refreshEvents = new Set([
-          "stream.status_changed",
-          "stream.forecast_updated",
-          "recording.started",
-          "recording.finished",
-          "queue.health_updated",
-        ]);
-        if (refreshEvents.has(envelope.type)) {
-          fetchStreams();
-        }
-      },
-      (connected) => {
-        onWsStatus(connected);
-      },
-    );
-    wsRef.current = client;
+    if (!connected && items.length > 0) {
+      setItems([]);
+    }
+  }, [connected]);
 
-    return () => {
-      client.destroy();
-      wsRef.current = null;
-    };
-  }, [fetchStreams, onWsStatus]);
+  // Watch for cycle stats events and update display
+  useEffect(() => {
+    if (lastEnvelope?.type === "queue.cycle_stats") {
+      const payload = lastEnvelope.payload as unknown as CycleStats;
+      setCycleStats(payload);
+      const total = Object.values(payload.enqueued).reduce((a, b) => a + b, 0);
+      setEnqueuedHistory((prev) => {
+        const next = [...prev, total];
+        if (next.length > 20) next.shift();
+        return next;
+      });
+    }
+  }, [lastEnvelope]);
 
   return (
     <div className="dashboard">
@@ -99,15 +95,76 @@ export function Dashboard({ onWsStatus }: Props) {
         <button
           className="btn btn-accent"
           onClick={() => setShowAddModal(true)}
+          disabled={!connected}
+          title={!connected ? "Core is disconnected" : undefined}
         >
           + Add Stream
         </button>
       </div>
 
+      {cycleStats && (
+        <div className="cycle-stats">
+          <div className="cycle-stats-row">
+            <span className="cycle-stats-label">Enqueued ↑</span>
+            <span className="cycle-stat" style={{ color: BAND_COLORS.fast }}>
+              F {cycleStats.enqueued.fast ?? 0}
+            </span>
+            <span className="cycle-stat" style={{ color: BAND_COLORS.medium }}>
+              M {cycleStats.enqueued.medium ?? 0}
+            </span>
+            <span className="cycle-stat" style={{ color: BAND_COLORS.slow }}>
+              S {cycleStats.enqueued.slow ?? 0}
+            </span>
+          </div>
+          <div className="cycle-stats-row">
+            <span className="cycle-stats-label">Waiting</span>
+            <span className="cycle-stat" style={{ color: BAND_COLORS.fast }}>
+              F {cycleStats.waiting.fast ?? 0}
+            </span>
+            <span className="cycle-stat" style={{ color: BAND_COLORS.medium }}>
+              M {cycleStats.waiting.medium ?? 0}
+            </span>
+            <span className="cycle-stat" style={{ color: BAND_COLORS.slow }}>
+              S {cycleStats.waiting.slow ?? 0}
+            </span>
+          </div>
+          <div className="cycle-stats-row">
+            <span className="cycle-stats-label">Dispatched / Cycle</span>
+            <span className="cycle-stat" style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+              {enqueuedHistory.length > 0 ? (
+                <>
+                  <span className="sparkline">
+                    {(() => {
+                      const mx = Math.max(...enqueuedHistory, 1);
+                      return enqueuedHistory.map((v, i) => (
+                        <span
+                          key={i}
+                          className="sparkline-bar"
+                          style={{ height: `${(v / mx) * 100}%` }}
+                        />
+                      ));
+                    })()}
+                  </span>
+                  <span style={{ fontSize: "12px", color: "var(--text-secondary)" }}>
+                    {enqueuedHistory[enqueuedHistory.length - 1]}
+                  </span>
+                </>
+              ) : (
+                "—"
+              )}
+            </span>
+          </div>
+        </div>
+      )}
+
       {error && <div className="error-banner">{error}</div>}
 
       {loading ? (
         <div className="loading-text">Loading streams...</div>
+      ) : !connected ? (
+        <div className="empty-state disconnected">
+          Core disconnected. Waiting for connection...
+        </div>
       ) : items.length === 0 ? (
         <div className="empty-state">
           No streams configured yet. Click "Add Stream" to get started.
@@ -160,6 +217,48 @@ export function Dashboard({ onWsStatus }: Props) {
           font-size: 14px;
           text-align: center;
           padding: 48px 0;
+        }
+        .cycle-stats {
+          display: flex;
+          gap: 24px;
+          flex-wrap: wrap;
+          background: rgba(255, 255, 255, 0.03);
+          border: 1px solid rgba(255, 255, 255, 0.08);
+          border-radius: var(--radius-sm);
+          padding: 12px 16px;
+        }
+        .cycle-stats-row {
+          display: flex;
+          align-items: center;
+          gap: 8px;
+        }
+        .cycle-stats-label {
+          color: var(--text-secondary);
+          font-size: 12px;
+          font-weight: 600;
+          text-transform: uppercase;
+          letter-spacing: 0.5px;
+          margin-right: 4px;
+        }
+        .cycle-stat {
+          font-size: 14px;
+          font-weight: 700;
+          font-variant-numeric: tabular-nums;
+        }
+        .sparkline {
+          display: inline-flex;
+          align-items: flex-end;
+          gap: 2px;
+          height: 24px;
+        }
+        .sparkline-bar {
+          width: 4px;
+          background: var(--accent);
+          border-radius: 1px 1px 0 0;
+          min-height: 2px;
+        }
+        .empty-state.disconnected {
+          color: var(--danger);
         }
         .stream-grid {
           display: grid;

@@ -3,7 +3,7 @@
     "log_format": "detailed",
     "data_dir": "./data",
     "db_path": "./data/streamarch.db",
-    "recordings_dir": "./data/recordings",
+    "recordings_dir": "C:/Users/gperez/dev/StreamArch/data/recordings",
     "max_concurrent_checks": 5,
     "max_concurrent_recordings": 2,
     "default_check_interval_seconds": 300,

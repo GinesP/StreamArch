@@ -144,6 +144,7 @@ class TestStreamGetResolver:
             mock_stream_data = MagicMock()
             mock_stream_data.is_live = False
             mock_stream_data.record_url = None
+            mock_stream_data.flv_url = None
             mock_stream_data.title = "Offline Stream"
             mock_stream_data.anchor_name = "TestUser"
             mock_stream_data.m3u8_url = None
@@ -157,7 +158,7 @@ class TestStreamGetResolver:
         assert result.title == "Offline Stream"
 
     def test_resolve_returns_live_stream_result(self) -> None:
-        """Full live-stream resolution with mocked streamget."""
+        """Full live-stream resolution — prefers FLV over HLS."""
         resolver = StreamGetResolver()
 
         with patch("streamget.TikTokLiveStream") as mock_cls:
@@ -170,6 +171,7 @@ class TestStreamGetResolver:
             mock_stream_data = MagicMock()
             mock_stream_data.is_live = True
             mock_stream_data.record_url = "https://example.com/stream.m3u8"
+            mock_stream_data.flv_url = "https://example.com/stream.flv"
             mock_stream_data.title = "🎮 Gaming Stream"
             mock_stream_data.anchor_name = "TestUser-testuser"
             mock_stream_data.m3u8_url = "https://example.com/stream.m3u8"
@@ -178,10 +180,63 @@ class TestStreamGetResolver:
             result = resolver.resolve("https://www.tiktok.com/@user/live")
 
         assert result.is_live is True
-        assert result.stream_url == "https://example.com/stream.m3u8"
+        assert result.stream_url == "https://example.com/stream.flv"
+        assert result.flv_url == "https://example.com/stream.flv"
         assert result.title == "🎮 Gaming Stream"
         assert result.anchor_name == "TestUser-testuser"
         assert result.m3u8_url == "https://example.com/stream.m3u8"
+
+    def test_resolve_falls_back_to_record_url_when_no_flv(self) -> None:
+        """When flv_url is None, HLS record_url is used."""
+        resolver = StreamGetResolver()
+
+        with patch("streamget.TikTokLiveStream") as mock_cls:
+            mock_instance = MagicMock()
+            mock_cls.return_value = mock_instance
+            mock_instance.fetch_web_stream_data = AsyncMock(
+                return_value={"live_url": "https://www.tiktok.com/@user/live"}
+            )
+
+            mock_stream_data = MagicMock()
+            mock_stream_data.is_live = True
+            mock_stream_data.record_url = "https://example.com/stream.m3u8"
+            mock_stream_data.flv_url = None
+            mock_stream_data.title = "No FLV"
+            mock_stream_data.anchor_name = "test"
+            mock_stream_data.m3u8_url = "https://example.com/stream.m3u8"
+            mock_instance.fetch_stream_url = AsyncMock(return_value=mock_stream_data)
+
+            result = resolver.resolve("https://www.tiktok.com/@user/live")
+
+        assert result.is_live is True
+        assert result.stream_url == "https://example.com/stream.m3u8"
+        assert result.flv_url is None
+
+    def test_resolve_handles_missing_flv_url(self) -> None:
+        """When stream_data lacks flv_url, stream_url falls back to record_url."""
+        resolver = StreamGetResolver()
+
+        with patch("streamget.TikTokLiveStream") as mock_cls:
+            mock_instance = MagicMock()
+            mock_cls.return_value = mock_instance
+            mock_instance.fetch_web_stream_data = AsyncMock(
+                return_value={"live_url": "https://www.tiktok.com/@user/live"}
+            )
+
+            mock_stream_data = MagicMock()
+            mock_stream_data.is_live = True
+            mock_stream_data.record_url = "https://example.com/stream.m3u8"
+            del mock_stream_data.flv_url  # simulate missing attribute
+            mock_stream_data.title = "No FLV attr"
+            mock_stream_data.anchor_name = "test"
+            mock_stream_data.m3u8_url = "https://example.com/stream.m3u8"
+            mock_instance.fetch_stream_url = AsyncMock(return_value=mock_stream_data)
+
+            result = resolver.resolve("https://www.tiktok.com/@user/live")
+
+        assert result.is_live is True
+        assert result.stream_url == "https://example.com/stream.m3u8"
+        assert result.flv_url is None
 
     def test_resolve_passes_cookies_to_streamget(self) -> None:
         """Cookies from the cookie service are passed to TikTokLiveStream."""
@@ -197,6 +252,7 @@ class TestStreamGetResolver:
             mock_stream_data = MagicMock()
             mock_stream_data.is_live = False
             mock_stream_data.record_url = None
+            mock_stream_data.flv_url = None
             mock_stream_data.title = None
             mock_stream_data.anchor_name = None
             mock_stream_data.m3u8_url = None
@@ -221,6 +277,7 @@ class TestStreamGetResolver:
             mock_stream_data = MagicMock()
             mock_stream_data.is_live = False
             mock_stream_data.record_url = None
+            mock_stream_data.flv_url = None
             mock_stream_data.title = None
             mock_stream_data.anchor_name = None
             mock_stream_data.m3u8_url = None

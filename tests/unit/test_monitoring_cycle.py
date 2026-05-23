@@ -18,6 +18,7 @@ from app.application.orchestrators.monitoring_cycle import MonitoringCycle
 from app.application.services.live_check_result_store import (
     LiveCheckResultStore,
 )
+from app.domain.monitoring.runtime_state import MonitoringRuntimeState
 from app.domain.monitoring.snapshot import MonitoringSnapshot
 from app.domain.monitoring.states import MonitoringState
 from app.domain.prediction.results import PredictionResult
@@ -62,6 +63,19 @@ def _snapshot(**overrides) -> MonitoringSnapshot:
         current_recording_session_id=overrides.get("current_recording_session_id", None),
         last_error_code=overrides.get("last_error_code", None),
         last_error_message=overrides.get("last_error_message", None),
+        updated_at=overrides.get("updated_at", NOW),
+    )
+
+
+def _runtime_state(**overrides) -> MonitoringRuntimeState:
+    return MonitoringRuntimeState(
+        stream_target_id=overrides.get("stream_target_id", "t1"),
+        next_check_at=overrides.get("next_check_at", None),
+        last_checked_at=overrides.get("last_checked_at", None),
+        last_live_at=overrides.get("last_live_at", NOW - timedelta(days=7)),
+        is_live=overrides.get("is_live", False),
+        active_recording_session_id=overrides.get("active_recording_session_id", None),
+        previous_likelihood=overrides.get("previous_likelihood", 0.5),
         updated_at=overrides.get("updated_at", NOW),
     )
 
@@ -190,11 +204,11 @@ class TestCycleSingleTarget:
         mock_repos["target_repo"].list_all.return_value = [target]
 
         # Pre-populate in-memory snapshot
-        snap = _snapshot(
+        runtime_state = _runtime_state(
             stream_target_id=target_id,
             next_check_at=next_check_at,
         )
-        cycle._snapshots[target_id] = snap
+        cycle._runtime_states[target_id] = runtime_state
 
         sessions = []
         mock_repos["session_repo"].list_by_target.return_value = sessions
@@ -207,7 +221,7 @@ class TestCycleSingleTarget:
             return_value=now,
         ):
             cycle._run_one_cycle()
-        return snap
+        return runtime_state
 
     def test_processes_enabled_target(
         self, cycle, mock_repos, mock_engine, mock_queue_planner
@@ -218,7 +232,7 @@ class TestCycleSingleTarget:
         # Prediction was called
         mock_engine.predict.assert_called_once()
         # In-memory snapshot was updated
-        updated = cycle._snapshots.get("t1")
+        updated = cycle.get_snapshot("t1")
         assert updated is not None
         # Enqueued for async check (no next_check_at)
         mock_queue_planner.enqueue.assert_called_once_with(
@@ -282,7 +296,7 @@ class TestCycleSingleTarget:
         ):
             cycle._run_one_cycle()
         mock_queue_planner.enqueue.assert_called_once()
-        snap_a = cycle._snapshots["t1"]
+        snap_a = cycle.get_snapshot("t1")
         assert snap_a.next_check_at is not None
         assert snap_a.next_check_at > NOW
         deadline = snap_a.next_check_at  # remember the deadline
@@ -295,7 +309,7 @@ class TestCycleSingleTarget:
         ):
             cycle._run_one_cycle()
         mock_queue_planner.enqueue.assert_not_called()
-        snap_b = cycle._snapshots["t1"]
+        snap_b = cycle.get_snapshot("t1")
         # CRITICAL: next_check_at MUST be preserved, NOT pushed forward
         assert snap_b.next_check_at == deadline, (
             f"next_check_at mutated from {deadline} to {snap_b.next_check_at}"
@@ -309,7 +323,7 @@ class TestCycleSingleTarget:
         ):
             cycle._run_one_cycle()
         mock_queue_planner.enqueue.assert_called_once()
-        snap_c = cycle._snapshots["t1"]
+        snap_c = cycle.get_snapshot("t1")
         assert snap_c.next_check_at is not None
         assert snap_c.next_check_at > NOW + timedelta(minutes=10)
 
@@ -320,8 +334,7 @@ class TestCycleSingleTarget:
         target = _target(id="t1")
         mock_repos["target_repo"].list_all.return_value = [target]
 
-        initial_snap = _snapshot(stream_target_id="t1")
-        cycle._snapshots["t1"] = initial_snap
+        cycle._runtime_states["t1"] = _runtime_state(stream_target_id="t1")
 
         sessions = []
         mock_repos["session_repo"].list_by_target.return_value = sessions
@@ -334,7 +347,8 @@ class TestCycleSingleTarget:
         # Prediction used the initial snapshot
         predict_call = mock_engine.predict.call_args
         assert predict_call is not None
-        assert predict_call.kwargs["snapshot"] is initial_snap
+        assert predict_call.kwargs["snapshot"].stream_target_id == "t1"
+        assert predict_call.kwargs["snapshot"].last_live_at == NOW - timedelta(days=7)
 
     def test_creates_snapshot_for_new_target(
         self, cycle, mock_repos, mock_engine, mock_queue_planner
@@ -362,7 +376,7 @@ class TestCycleSingleTarget:
         )
 
         # Snapshot was created in memory
-        snap = cycle._snapshots.get("new_target")
+        snap = cycle.get_snapshot("new_target")
         assert snap is not None
         assert snap.stream_target_id == "new_target"
         assert snap.current_likelihood == 0.3
@@ -375,8 +389,7 @@ class TestCycleSingleTarget:
         target = _target(id="t1", favorite=True)
         mock_repos["target_repo"].list_all.return_value = [target]
 
-        snap = _snapshot(stream_target_id="t1", next_check_at=None)
-        cycle._snapshots["t1"] = snap
+        cycle._runtime_states["t1"] = _runtime_state(stream_target_id="t1", next_check_at=None)
 
         sessions = [MagicMock(), MagicMock()]  # 2 sessions
         mock_repos["session_repo"].list_by_target.return_value = sessions
@@ -394,7 +407,7 @@ class TestCycleSingleTarget:
         ):
             cycle._run_one_cycle()
 
-        snap = cycle._snapshots.get("t1")
+        snap = cycle.get_snapshot("t1")
         assert snap is not None
         assert snap.current_likelihood == 0.85
         assert snap.current_confidence == Confidence.HIGH
@@ -411,8 +424,7 @@ class TestCycleSingleTarget:
         target = _target(id="t1")
         mock_repos["target_repo"].list_all.return_value = [target]
 
-        snap = _snapshot(stream_target_id="t1")
-        cycle._snapshots["t1"] = snap
+        cycle._runtime_states["t1"] = _runtime_state(stream_target_id="t1")
 
         sessions = [MagicMock(), MagicMock(), MagicMock()]  # 3 sessions
         mock_repos["session_repo"].list_by_target.return_value = sessions
@@ -434,8 +446,10 @@ class TestCycleSingleTarget:
         target = _target(id="t1")
         mock_repos["target_repo"].list_all.return_value = [target]
 
-        snap = _snapshot(stream_target_id="t1", current_likelihood=0.77)
-        cycle._snapshots["t1"] = snap
+        cycle._runtime_states["t1"] = _runtime_state(
+            stream_target_id="t1",
+            previous_likelihood=0.77,
+        )
 
         sessions = []
         mock_repos["session_repo"].list_by_target.return_value = sessions
@@ -459,10 +473,10 @@ class TestCycleSingleTarget:
         mock_repos["target_repo"].list_all.return_value = [t1, t2]
 
         # Pre-populate in-memory snapshots
-        cycle._snapshots["t1"] = _snapshot(
+        cycle._runtime_states["t1"] = _runtime_state(
             stream_target_id="t1", next_check_at=NOW + timedelta(hours=1),
         )
-        cycle._snapshots["t2"] = _snapshot(
+        cycle._runtime_states["t2"] = _runtime_state(
             stream_target_id="t2", next_check_at=NOW + timedelta(hours=1),
         )
 
@@ -738,12 +752,12 @@ class TestResolveResultCoherence:
     def _apply(
         self,
         cycle: MonitoringCycle,
-        snapshot: MonitoringSnapshot,
+        runtime_state: MonitoringRuntimeState,
         is_live: bool,
         stream_url: str | None = None,
         is_favorite: bool = False,
         now: datetime = NOW,
-    ) -> MonitoringSnapshot:
+    ) -> MonitoringRuntimeState:
         """Thin wrapper around ``_apply_resolve_result``."""
         from app.infrastructure.resolvers.result import ResolveResult
 
@@ -751,8 +765,8 @@ class TestResolveResultCoherence:
             is_live=is_live,
             stream_url=stream_url,
         )
-        target = _target(id=snapshot.stream_target_id, favorite=is_favorite)
-        return cycle._apply_resolve_result(snapshot, result, now, target)
+        target = _target(id=runtime_state.stream_target_id, favorite=is_favorite)
+        return cycle._apply_resolve_result(runtime_state, result, now, target)
 
     # ── Live resolve ────────────────────────────────────────────────
 
@@ -761,11 +775,9 @@ class TestResolveResultCoherence:
     ) -> None:
         """Live resolve overwrites stale MEDIUM queue_band/next_check_at
         with FAST values."""
-        stale = _snapshot(
+        stale = _runtime_state(
             stream_target_id="t1",
-            state=MonitoringState.IDLE,
-            queue_band=QueueBand.MEDIUM,
-            current_likelihood=0.5,
+            previous_likelihood=0.5,
             next_check_at=NOW + timedelta(seconds=300),
         )
 
@@ -775,9 +787,10 @@ class TestResolveResultCoherence:
         ):
             updated = self._apply(cycle, stale, is_live=True)
 
-        assert updated.state == MonitoringState.RECORDING
-        assert updated.current_likelihood == 1.0
-        assert updated.queue_band == QueueBand.FAST
+        updated_snapshot = cycle._build_snapshot(_target(id="t1"), runtime_state=updated, now=NOW)
+        assert updated_snapshot.state == MonitoringState.IDLE
+        assert updated_snapshot.current_likelihood == 1.0
+        assert updated_snapshot.queue_band == QueueBand.FAST
         # FAST interval = 60s, jitter ±15% = ±9s → range [51, 69]
         assert updated.next_check_at is not None
         assert NOW + timedelta(seconds=50) <= updated.next_check_at <= NOW + timedelta(seconds=70), (
@@ -785,19 +798,15 @@ class TestResolveResultCoherence:
         )
         # last_checked_at was bumped
         assert updated.last_checked_at == NOW
-        # resolved_stream_url was set
-        assert updated.resolved_stream_url is None  # no url passed in helper
 
     def test_live_resolve_with_favorite_target(
         self, cycle,
     ) -> None:
         """Even favourite targets get FAST band after live resolve —
         likelihood=1.0 exceeds the fast threshold regardless."""
-        stale = _snapshot(
+        stale = _runtime_state(
             stream_target_id="t1",
-            state=MonitoringState.IDLE,
-            queue_band=QueueBand.MEDIUM,
-            current_likelihood=0.5,
+            previous_likelihood=0.5,
             next_check_at=NOW + timedelta(seconds=300),
         )
 
@@ -808,10 +817,12 @@ class TestResolveResultCoherence:
             updated = self._apply(cycle, stale, is_live=True, is_favorite=True,
                                   stream_url="https://example.com/stream.m3u8")
 
-        assert updated.state == MonitoringState.RECORDING
-        assert updated.current_likelihood == 1.0
-        assert updated.queue_band == QueueBand.FAST
-        assert updated.resolved_stream_url == "https://example.com/stream.m3u8"
+        updated_snapshot = cycle._build_snapshot(
+            _target(id="t1", favorite=True), runtime_state=updated, now=NOW,
+        )
+        assert updated_snapshot.state == MonitoringState.IDLE
+        assert updated_snapshot.current_likelihood == 1.0
+        assert updated_snapshot.queue_band == QueueBand.FAST
 
     # ── Offline resolve ─────────────────────────────────────────────
 
@@ -819,11 +830,9 @@ class TestResolveResultCoherence:
         self, cycle,
     ) -> None:
         """Offline resolve overwrites stale FAST timing with SLOW values."""
-        stale = _snapshot(
+        stale = _runtime_state(
             stream_target_id="t1",
-            state=MonitoringState.IDLE,
-            queue_band=QueueBand.FAST,
-            current_likelihood=0.95,
+            previous_likelihood=0.95,
             next_check_at=NOW + timedelta(seconds=60),
         )
 
@@ -833,9 +842,10 @@ class TestResolveResultCoherence:
         ):
             updated = self._apply(cycle, stale, is_live=False)
 
-        assert updated.state == MonitoringState.IDLE
-        assert updated.current_likelihood == 0.0
-        assert updated.queue_band == QueueBand.SLOW
+        updated_snapshot = cycle._build_snapshot(_target(id="t1"), runtime_state=updated, now=NOW)
+        assert updated_snapshot.state == MonitoringState.IDLE
+        assert updated_snapshot.current_likelihood == 0.0
+        assert updated_snapshot.queue_band == QueueBand.SLOW
         # SLOW interval = 900s, jitter ±15% = ±135s → range [765, 1035]
         assert updated.next_check_at is not None
         assert NOW + timedelta(seconds=760) <= updated.next_check_at <= NOW + timedelta(seconds=1040), (
@@ -843,19 +853,14 @@ class TestResolveResultCoherence:
         )
         # last_live_at is preserved (not bumped) for offline resolve
         assert updated.last_live_at == stale.last_live_at
-        # resolved_stream_url is cleared
-        assert updated.resolved_stream_url is None
-
     def test_offline_resolve_with_favorite_target(
         self, cycle,
     ) -> None:
         """Favourite targets get at least MEDIUM band even after offline
         resolve — the favourite floor prevents demotion to SLOW."""
-        stale = _snapshot(
+        stale = _runtime_state(
             stream_target_id="t1",
-            state=MonitoringState.IDLE,
-            queue_band=QueueBand.MEDIUM,
-            current_likelihood=0.5,
+            previous_likelihood=0.5,
             next_check_at=NOW + timedelta(seconds=300),
         )
 
@@ -865,11 +870,14 @@ class TestResolveResultCoherence:
         ):
             updated = self._apply(cycle, stale, is_live=False, is_favorite=True)
 
-        assert updated.state == MonitoringState.IDLE
-        assert updated.current_likelihood == 0.0
+        updated_snapshot = cycle._build_snapshot(
+            _target(id="t1", favorite=True), runtime_state=updated, now=NOW,
+        )
+        assert updated_snapshot.state == MonitoringState.IDLE
+        assert updated_snapshot.current_likelihood == 0.0
         # Favourite floor → at least MEDIUM, never SLOW
-        assert updated.queue_band in (QueueBand.MEDIUM, QueueBand.FAST), (
-            f"Expected at least MEDIUM for favourite, got {updated.queue_band}"
+        assert updated_snapshot.queue_band in (QueueBand.MEDIUM, QueueBand.FAST), (
+            f"Expected at least MEDIUM for favourite, got {updated_snapshot.queue_band}"
         )
 
 
@@ -950,7 +958,7 @@ class TestCycleConfig:
             loop_interval_seconds=3600,
             period_days=60.0,
         )
-        c._snapshots["t1"] = _snapshot(stream_target_id="t1")
+        c._runtime_states["t1"] = _runtime_state(stream_target_id="t1")
         mock_repos["session_repo"].list_by_target.return_value = []
         mock_engine.predict.return_value = _result()
 

@@ -104,4 +104,6 @@ export type WsEventType =
   | "recording.finished"
   | "postprocess.updated"
   | "queue.health_updated"
-  | "system.alert";
+  | "queue.cycle_stats"
+  | "system.alert"
+  | "system.core_ready";

@@ -32,6 +32,8 @@ class ResolveResult:
     m3u8_url:
         Raw HLS playlist URL when the platform provides one separately
         from the "record" URL.
+    flv_url:
+        Direct FLV stream URL when available (preferred for TikTok).
     """
 
     is_live: bool = False
@@ -39,3 +41,4 @@ class ResolveResult:
     title: str | None = None
     anchor_name: str | None = None
     m3u8_url: str | None = None
+    flv_url: str | None = None

@@ -26,6 +26,7 @@ class Container:
     health_service: object = None
     cookie_service: object = None
     live_check_service: object = None
+    live_check_result_store: object = None
 
     # ── Infrastructure ────────────────────────────────────────────
     config: object = None

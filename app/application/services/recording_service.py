@@ -67,7 +67,6 @@ from app.infrastructure.repositories.stream_target_repository import (
 
 logger = __import__("logging").getLogger(__name__)
 
-
 class RecordingService:
     """Orchestrates recording sessions from detection through finalisation.
 
@@ -86,7 +85,9 @@ class RecordingService:
     event_bus:
         Optional event bus for emitting domain events.
     cookie_service:
-        Optional cookie service for authenticated streams.
+        Optional cookie service kept for resolver-layer compatibility.
+        Recording start uses the already resolved stream URL directly and
+        does not forward cookies to ffmpeg.
     recording_config:
         Global recording behaviour configuration.  Falls back to
         :class:`RecordingConfig` internal defaults when ``None``.
@@ -111,7 +112,6 @@ class RecordingService:
         self._event_bus = event_bus
         self._cookie_service = cookie_service
         self._recording_config = recording_config or RecordingConfig()
-
         # Maps session_id → runner recording_id for targeted stop.
         self._session_to_recording: dict[str, str] = {}
 
@@ -165,12 +165,6 @@ class RecordingService:
         # ── Resolve effective recording config ────────────────────
         config = resolve_recording_config(self._recording_config)
 
-        # ── Build optional HTTP headers (cookies) ─────────────────
-        headers: dict[str, str] | None = None
-        cookie_str = self._cookie_service.get_cookie_string(target.platform.value) if self._cookie_service else ""
-        if cookie_str:
-            headers = {"Cookie": cookie_str}
-
         # ── Allocate file path and start ffmpeg ───────────────────
         ts_path = self._file_manager.allocate_path(
             handle=target.handle,
@@ -178,10 +172,11 @@ class RecordingService:
             stream_title=None,
             per_stream_directory=config.per_stream_directory,
         )
+        ffmpeg_output_path = ts_path.as_posix()
         runner_recording_id = self._runner.start_recording(
             stream_url=stream_url,
-            output_path=str(ts_path),
-            headers=headers,
+            output_path=ffmpeg_output_path,
+            headers=None,
             on_exit=lambda rid: self._on_runner_exit(session_id, rid),
             segment_enabled=config.segment_enabled,
             segment_time_seconds=config.segment_time_seconds,
@@ -195,7 +190,7 @@ class RecordingService:
             id=_new_id(),
             recording_session_id=session_id,
             artifact_type=ArtifactType.RAW_TS,
-            path=str(ts_path),
+            path=ffmpeg_output_path,
             container_format=ContainerFormat.TS,
             status=ArtifactStatus.WRITING,
             size_bytes=None,
@@ -212,7 +207,7 @@ class RecordingService:
             RecordingStarted(
                 stream_target_id=stream_target_id,
                 recording_session_id=session_id,
-                artifact_path=str(ts_path),
+                artifact_path=ffmpeg_output_path,
             ),
         )
         self._emit(

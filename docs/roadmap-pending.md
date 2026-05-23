@@ -30,7 +30,8 @@ El núcleo completo de StreamArch está implementado y verificado con un stream 
 
 ### Prioridad alta
 
-- [ ] **Simplificar scheduler y eliminar MonitoringSnapshot rico** — reemplazar el snapshot actual por un estado operativo mínimo en memoria (por ejemplo: `stream_id`, `last_checked_at`, `next_check_at`, `last_live_at`, `active_recording_session_id`) y derivar el resto del estado de UI/predicción al vuelo. Objetivo: acercar la arquitectura al modelo simple de StreamCapQT y reducir inconsistencias entre estado, cola, likelihood y timing.
+- [x] **Simplificar scheduler y eliminar MonitoringSnapshot rico** — el scheduler ahora conserva un estado operativo mínimo en memoria y deriva `MonitoringSnapshot` al vuelo para queries/UI/eventos. Objetivo: acercar la arquitectura al modelo simple de StreamCapQT y reducir inconsistencias entre estado, cola, likelihood y timing.
+- [x] **Métricas de ciclo en dashboard** — worker valida "due" antes de checkear (evita checks redundantes), emite eventos `queue.cycle_stats` con contadores de enqueued/waiting por banda, sparkline de dispatched por ciclo en la UI. UI normalizada a inglés (F/M/S = Fast/Medium/Slow).
 - [ ] **Resolvedor Twitch funcional** — implementar StreamlinkResolver de verdad usando streamget.TwitchLiveStream, siguiendo el mismo patrón que TikTok.
 - [ ] **Resolvedor YouTube funcional** — implementar YtDlpResolver usando yt-dlp o streamget.YouTubeLiveStream.
 - [ ] **DELETE /api/v1/streams/{id}** — endpoint para eliminar stream con opción de limpiar grabaciones asociadas.

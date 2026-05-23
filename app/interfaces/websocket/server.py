@@ -32,7 +32,9 @@ EVENT_TOPICS: list[str] = [
     "recording.finished",
     "postprocess.updated",
     "queue.health_updated",
+    "queue.cycle_stats",
     "system.alert",
+    "system.core_ready",
 ]
 """All event topics that the WebSocket server subscribes to."""
 

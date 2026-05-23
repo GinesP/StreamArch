@@ -146,6 +146,7 @@ def start_application(container: Container) -> None:
 
     # ── Live check result store (thread-safe, shared) ────────────
     result_store = LiveCheckResultStore()
+    container.live_check_result_store = result_store
 
     # ── Event bus ─────────────────────────────────────────────────
     container.event_bus = EventBus()
@@ -172,6 +173,7 @@ def start_application(container: Container) -> None:
         cookie_service=container.cookie_service,
         recording_config=recording_config,
     )
+    container.recording_service.finalize_all_active_sessions(reason="startup")
 
     container.monitoring_cycle = MonitoringCycle(
         prediction_engine=container.prediction_engine,
@@ -185,6 +187,10 @@ def start_application(container: Container) -> None:
         recording_service=container.recording_service,
     )
     container.monitoring_cycle.start()
+
+    # Wire due-checker from MonitoringCycle to WorkerPool so workers
+    # skip stale (non-due) items dequeued with a past deadline.
+    container.worker_pool.due_checker = container.monitoring_cycle.is_stream_due
 
     # ── WebSocket server ──────────────────────────────────────────
     container.websocket_handler = WebSocketServer(

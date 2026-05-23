@@ -145,6 +145,7 @@ class TestFileManagerAllocatePath:
 
             path = fm.allocate_path(handle="streamer", extension="ts")
 
+        assert path.is_absolute()
         assert path.name == "streamer_2026-05-22_23-12-56.ts"
         assert path.parent.name == "streamer"
         assert path.parent.parent == tmp_path
@@ -221,6 +222,7 @@ class TestFileManagerAllocatePath:
 
             path = fm_flat.allocate_path(handle="streamer", extension="ts")
 
+        assert path.is_absolute()
         assert path.parent == tmp_path
         assert path.parent.name != "streamer"
 

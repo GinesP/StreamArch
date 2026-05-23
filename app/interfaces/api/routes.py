@@ -11,6 +11,7 @@ Each handler function receives::
 And returns ``(json_data, http_status)``.
 """
 
+import logging
 import os
 from dataclasses import asdict
 
@@ -29,6 +30,8 @@ from app.bootstrap.container import Container
 from app.interfaces.api.server import Router
 from app.interfaces.presenters.stream_presenter import StreamPresenter
 
+logger = logging.getLogger("streamarch")
+
 
 # ── Route handlers ─────────────────────────────────────────────────────
 
@@ -44,7 +47,12 @@ def handle_list_streams(
 def handle_add_stream(
     container: Container, params: dict, body: dict | None
 ) -> tuple[dict, int]:
-    """POST /api/v1/streams — create a new stream target."""
+    """POST /api/v1/streams — create a new stream target.
+
+    After persisting the target, triggers an immediate live check and
+    registers the target in the monitoring cycle so the result is
+    available on the next cycle.
+    """
     if body is None:
         raise ValueError("Request body is required and must be valid JSON")
 
@@ -59,6 +67,23 @@ def handle_add_stream(
     )
 
     target_id = container.add_stream_handler.handle(cmd)
+
+    # ── Immediate live check for the new target ─────────────────
+    try:
+        result = container.force_check_handler.handle(
+            ForceCheckCommand(stream_id=target_id),
+        )
+        # Store result so the monitoring cycle picks it up on next pass
+        if container.live_check_result_store is not None:
+            container.live_check_result_store.store(target_id, result)
+        # Register runtime state so the target appears in snapshots
+        if container.monitoring_cycle is not None:
+            container.monitoring_cycle.register_new_target(target_id)
+    except Exception:
+        # Non-fatal — the monitoring cycle will pick up the new target
+        # on its next pass anyway.
+        logger.exception("Initial live check failed for new stream %s", target_id)
+
     return {"id": target_id}, 201
 
 
