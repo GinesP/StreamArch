@@ -465,6 +465,8 @@ class MonitoringCycle:
 
         Called from worker threads via ``WorkerPool.live_callback``.
         Starts recording, updates runtime state, emits events.
+
+        Thread-safe: uses ``_runtime_states`` lock via ``_apply_resolve_result``.
         """
         if stream_url is None:
             return
@@ -476,7 +478,7 @@ class MonitoringCycle:
         now = utc_now()
         runtime_state = self._get_or_create_runtime_state(stream_id, now)
 
-        # Avoid starting duplicate recordings
+        # Avoid starting duplicate recordings (thread-safe check)
         if runtime_state.active_recording_session_id is not None:
             return
 
@@ -494,7 +496,7 @@ class MonitoringCycle:
             self._runtime_states[stream_id] = runtime_state
             snapshot = self._build_snapshot(target, runtime_state=runtime_state, now=now)
 
-            # Update cache and emit status change event
+            # Update cache and emit status change event (atomic-ish)
             self._last_known_state[stream_id] = snapshot.state
             self._last_known_live[stream_id] = runtime_state.is_live
 
