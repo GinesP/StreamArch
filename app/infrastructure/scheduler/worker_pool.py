@@ -6,16 +6,16 @@ the semaphore.
 
 Worker allocation
 -----------------
-* **Base**: 1 worker per queue band (3 total).
-* **Boost**: a 4th worker is added to the most-congested queue when at
-  least one band has pending items.
+* **Base**: 1 worker per queue band (3 total) — always alive.
+* **Boost**: a mobile 4th worker that can be:
+  - **Added** (scale-up) when a queue exceeds its threshold
+  - **Moved** (reassign) when another queue is 2× more congested
+  - **Removed** (scale-down) when the boosted queue is empty for 60 s
+* **Only one band** may hold the boost at any time.
 * **Max per band**: 2 workers.
 * **Total max**: 4 workers (3 base + 1 boost).
-* The boost **never shifts** bands automatically in this simple model;
-  extra workers are never removed.  For 3–4 threads the overhead is
-  negligible.
-* A monitor thread checks queue depths every 15 seconds and adds a
-  boost worker if warranted.
+* A monitor thread checks queue depths every 15 seconds and decides
+  scale-up, reassign, or scale-down.
 """
 
 import logging
@@ -51,6 +51,14 @@ class WorkerPool:
     _BASE_PER_BAND: int = 1
     #: Seconds between worker-allocation monitor checks.
     _MONITOR_INTERVAL: float = 15.0
+    #: Queue depth thresholds that trigger a scale-up per band.
+    _SCALE_UP_THRESHOLDS: dict[str, int] = {
+        "fast": 5,
+        "medium": 8,
+        "slow": 5,
+    }
+    #: Seconds a queue must be empty before the boost is removed.
+    _SCALE_DOWN_IDLE_SECONDS: float = 60.0
 
     def __init__(
         self,
@@ -76,6 +84,16 @@ class WorkerPool:
             QueueBand.SLOW: [],
         }
         self._monitor_thread: threading.Thread | None = None
+        self._lock = threading.Lock()
+
+        # ── Adaptive boost tracking ───────────────────────────────────
+        self._boost_band: QueueBand | None = None
+        self._boost_empty_since: float | None = None
+        self._workers_to_stop: dict[QueueBand, int] = {
+            QueueBand.FAST: 0,
+            QueueBand.MEDIUM: 0,
+            QueueBand.SLOW: 0,
+        }
 
     # ── Lifecycle ─────────────────────────────────────────────────────
 
@@ -155,18 +173,18 @@ class WorkerPool:
         medium_depth: int,
         slow_depth: int,
     ) -> None:
-        """Evaluate queue depths and add a boost worker if warranted.
+        """Evaluate queue depths and adjust boost worker allocation.
 
         Called periodically by the internal monitor thread.
 
-        Policy
-        ------
-        * Base workers (1 per band) are created by ``start()``.
-        * This method only adds a **boost** worker to the most-congested
-          band when there are pending items.
-        * Max 2 workers per band, max 4 total (3 base + 1 boost).
-        * Boost workers are never removed (negligible overhead for 3-4
-          worker threads).
+        Policy (recoded per scheduler-redesign-v2.md):
+        * Base workers (1 per band) are always alive.
+        * At most **one band** may hold the boost (2 workers).
+        * **Scale-up**: add boost to a band that exceeds its threshold
+          when no other band has the boost.
+        * **Reassign**: move boost when another band is 2× more congested.
+        * **Scale-down**: remove boost when the boosted band has been
+          empty for ``_SCALE_DOWN_IDLE_SECONDS``.
         """
         depths: dict[QueueBand, int] = {
             QueueBand.FAST: fast_depth,
@@ -176,17 +194,73 @@ class WorkerPool:
 
         current = self.worker_count
         total_current = sum(current.values())
-
         has_pending = any(d > 0 for d in depths.values())
-        if has_pending:
-            congested = max(depths, key=depths.get)
-            # Only boost if the congested band hasn't already reached
-            # the per-band max AND we haven't hit the total max.
-            if (
-                current[congested] < self._MAX_PER_BAND
-                and total_current < self._MAX_TOTAL
-            ):
+
+        # ── Determine which band (if any) currently holds the boost ──
+        boost_band: QueueBand | None = None
+        for band in QueueBand:
+            if current[band] > self._BASE_PER_BAND:
+                boost_band = band
+                break
+
+        # ── Scale-down: remove boost from idle band ──────────────────
+        if boost_band is not None and depths[boost_band] == 0:
+            now = time.monotonic()
+            if self._boost_empty_since is None:
+                self._boost_empty_since = now
+            elif (now - self._boost_empty_since) >= self._SCALE_DOWN_IDLE_SECONDS:
+                self._logger.info(
+                    "Scale-down: removing boost from %s band (empty for %.0fs)",
+                    boost_band.value, self._SCALE_DOWN_IDLE_SECONDS,
+                )
+                self._remove_worker(boost_band)
+                self._boost_band = None
+                self._boost_empty_since = None
+            return
+
+        # Reset empty timer if the boosted queue has items again.
+        if boost_band is not None:
+            self._boost_empty_since = None
+
+        # ── Find the most congested band ─────────────────────────────
+        max_depth_band = max(depths, key=depths.get)
+        max_depth = depths[max_depth_band]
+
+        # ── Reassign: move boost to a band 2× more congested ────────
+        if boost_band is not None and max_depth_band != boost_band:
+            if (max_depth >= 2 * depths[boost_band]
+                    and max_depth >= self._SCALE_UP_THRESHOLDS[max_depth_band.value]
+                    and current[max_depth_band] < self._MAX_PER_BAND):
+                self._logger.info(
+                    "Reassign: moving boost from %s to %s band "
+                    "(depths: %s=%d, %s=%d)",
+                    boost_band.value, max_depth_band.value,
+                    boost_band.value, depths[boost_band],
+                    max_depth_band.value, max_depth,
+                )
+                self._add_worker(max_depth_band)
+                self._remove_worker(boost_band)
+                self._boost_band = max_depth_band
+                self._boost_empty_since = None
+            return
+
+        # ── Scale-up: add boost to a congested band ─────────────────
+        if boost_band is None and has_pending and total_current < self._MAX_TOTAL:
+            candidates = [
+                b for b in QueueBand
+                if depths[b] >= self._SCALE_UP_THRESHOLDS[b.value]
+                and current[b] < self._MAX_PER_BAND
+            ]
+            if candidates:
+                congested = max(candidates, key=lambda b: depths[b])
+                self._logger.info(
+                    "Scale-up: adding boost to %s band (depth=%d, threshold=%d)",
+                    congested.value, depths[congested],
+                    self._SCALE_UP_THRESHOLDS[congested.value],
+                )
                 self._add_worker(congested)
+                self._boost_band = congested
+                self._boost_empty_since = None
 
     # ── Worker management ─────────────────────────────────────────────
 
@@ -202,6 +276,17 @@ class WorkerPool:
         self._workers[band].append(t)
         self._logger.debug("Added worker for %s band (total: %d)", band.value, len(self._workers[band]))
 
+    def _remove_worker(self, band: QueueBand) -> bool:
+        """Request one excess worker in *band* to exit gracefully.
+
+        Returns ``True`` if a removal was requested, ``False`` if the
+        band already has only its base worker.
+        """
+        if len(self._workers[band]) <= self._BASE_PER_BAND:
+            return False
+        self._workers_to_stop[band] += 1
+        return True
+
     def _worker_loop(self, band: QueueBand) -> None:
         """Main loop for a single worker thread.
 
@@ -211,6 +296,18 @@ class WorkerPool:
         """
         while not self._stop_event.is_set():
             try:
+                # ── Self-removal check ───────────────────────────────
+                # If this band has been told to shed a worker, we exit.
+                if self._workers_to_stop.get(band, 0) > 0:
+                    with self._lock:
+                        self._workers_to_stop[band] -= 1
+                        self._workers[band].remove(threading.current_thread())
+                    self._logger.debug(
+                        "Worker exiting (%s band) — boost removed",
+                        band.value,
+                    )
+                    break
+
                 item = self._queue_planner.dequeue_for_band(band)
                 if item is None:
                     # No work — sleep a bit before polling again.
@@ -227,9 +324,9 @@ class WorkerPool:
                     )
                     continue
 
-                # Small random delay so external observers don't see
-                # perfectly regular check patterns.
-                time.sleep(random.uniform(0.0, 3.0))
+                # Small random stagger so external observers don't see
+                # perfectly regular check patterns (StreamCap: 0.5-3s).
+                time.sleep(random.uniform(0.5, 3.0))
 
                 self._logger.info(
                     "Checking stream %s (%s band)",
